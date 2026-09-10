@@ -7,7 +7,7 @@ import kotlin.math.max
  * Low-latency hinge filtering for hand-driven fold motion.
  *
  * Slow movement gets strong smoothing so sensor jitter is not visible. Fast motion raises
- * the filter alpha so the rendered transition does not visibly lag behind the physical hinge.
+ * the filter alpha aggressively so the rendered transition stays close to the physical hinge.
  * Raw angle is kept alongside the filtered angle so calibration can use the least-lagged value.
  */
 class HingeSignalFilter {
@@ -60,9 +60,11 @@ class HingeSignalFilter {
     }
 
     companion object {
-        private const val MIN_ALPHA = 0.20f
-        private const val MAX_ALPHA = 0.72f
-        private const val FAST_MOTION_DEGREES = 24f
+        // Deliberately asymmetric priorities: slow movement should look stable,
+        // but a quick fold must not leave the rendered state a frame group behind.
+        private const val MIN_ALPHA = 0.18f
+        private const val MAX_ALPHA = 0.88f
+        private const val FAST_MOTION_DEGREES = 18f
         private const val DIRECTION_DEADBAND_DEGREES = 0.25f
     }
 }
