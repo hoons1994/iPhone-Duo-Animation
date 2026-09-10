@@ -1,9 +1,9 @@
 package com.hoons1994.iphoneduoanimation
 
 import android.app.Activity
+import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Color
-import android.graphics.RenderEffect
-import android.graphics.RuntimeShader
 import android.os.Bundle
 import android.view.Gravity
 import android.view.ViewGroup
@@ -13,40 +13,44 @@ import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import java.util.Locale
-import kotlin.math.pow
+import kotlin.math.abs
 
 class MainActivity : Activity() {
 
-    private lateinit var shader: RuntimeShader
-    private lateinit var demoView: DemoHomeView
+    private lateinit var snapshotStore: SnapshotStore
+    private lateinit var transitionView: SnapshotTransitionView
     private lateinit var hingeMonitor: HingeAngleMonitor
+    private lateinit var presentationController: DuoPresentationController
+
+    private lateinit var coverBitmap: Bitmap
+    private lateinit var innerBitmap: Bitmap
+
     private lateinit var progressSeekBar: SeekBar
     private lateinit var stateText: TextView
+    private lateinit var snapshotStatusText: TextView
+    private lateinit var presentationStatusText: TextView
     private lateinit var modeButton: Button
-    private lateinit var effectTestButton: Button
 
     private var sensorMode = false
     private var userDragging = false
     private var lastProgress = 0f
     private var lastOpening = true
-    private var coverSurface = false
+    private var lastAngle = Float.NaN
     private var lastSource = "startup"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        shader = RuntimeShader(DuoShader.SOURCE)
-        shader.setFloatUniform("resolution", 1080f, 2400f)
-        shader.setFloatUniform("progress", 0f)
-        shader.setFloatUniform("opening", 1f)
-        shader.setFloatUniform("coverSurface", 0f)
-        shader.setFloatUniform("maxBlurPx", 20f * resources.displayMetrics.density)
-        shader.setFloatUniform("scaleDip", 0.010f)
+        snapshotStore = SnapshotStore(this)
+        coverBitmap = snapshotStore.loadOrFallback(SnapshotStore.Kind.COVER)
+        innerBitmap = snapshotStore.loadOrFallback(SnapshotStore.Kind.INNER)
+        presentationController = DuoPresentationController(this)
 
         hingeMonitor = HingeAngleMonitor(this) { angle, progress, opening ->
             if (!sensorMode || userDragging) return@HingeAngleMonitor
             runOnUiThread {
-                applyProgress(progress, opening, "hinge ${formatAngle(angle)}°")
+                lastAngle = angle
+                applyProgress(progress, opening, "hinge")
                 progressSeekBar.progress = (progress * SEEK_MAX).toInt()
             }
         }
@@ -54,16 +58,42 @@ class MainActivity : Activity() {
         sensorMode = hingeMonitor.isAvailable
         setContentView(buildUi())
         updateModeButton()
+        updateSnapshotStatus()
+        presentationStatusText.text = "Displays · ${presentationController.describeDisplays()}"
     }
 
     override fun onResume() {
         super.onResume()
         if (sensorMode) hingeMonitor.start()
+        if (::presentationStatusText.isInitialized) {
+            presentationStatusText.text = "Displays · ${presentationController.describeDisplays()}"
+        }
     }
 
     override fun onPause() {
         hingeMonitor.stop()
         super.onPause()
+    }
+
+    override fun onDestroy() {
+        presentationController.dismiss()
+        super.onDestroy()
+    }
+
+    @Deprecated("Legacy result API is sufficient for this dependency-free POC")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+
+        val kind = when (requestCode) {
+            REQUEST_COVER_SNAPSHOT -> SnapshotStore.Kind.COVER
+            REQUEST_INNER_SNAPSHOT -> SnapshotStore.Kind.INNER
+            else -> return
+        }
+
+        snapshotStore.persist(kind, uri)
+        reloadSnapshots()
     }
 
     private fun buildUi(): FrameLayout {
@@ -72,25 +102,15 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.BLACK)
         }
 
-        demoView = DemoHomeView(this).apply {
-            setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
-            setRenderEffect(RenderEffect.createRuntimeShaderEffect(shader, "content"))
-            addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-                if (width > 0 && height > 0) {
-                    shader.setFloatUniform("resolution", width.toFloat(), height.toFloat())
-
-                    val shorter = minOf(width, height).toFloat()
-                    val longer = maxOf(width, height).toFloat()
-                    coverSurface = (shorter / longer) < COVER_ASPECT_THRESHOLD
-                    shader.setFloatUniform("coverSurface", if (coverSurface) 1f else 0f)
-
-                    refreshRenderEffect()
-                    updateStateText()
-                }
+        transitionView = SnapshotTransitionView(this).apply {
+            setSnapshots(coverBitmap, innerBitmap)
+            updateProgress(lastProgress, lastOpening)
+            onSurfaceChanged = {
+                updateStateText()
             }
         }
         root.addView(
-            demoView,
+            transitionView,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -101,26 +121,33 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(
-                (18f * density).toInt(),
-                (12f * density).toInt(),
-                (18f * density).toInt(),
-                (18f * density).toInt(),
+                (14f * density).toInt(),
+                (10f * density).toInt(),
+                (14f * density).toInt(),
+                (14f * density).toInt(),
             )
-            setBackgroundColor(Color.argb(220, 12, 14, 20))
+            setBackgroundColor(Color.argb(225, 10, 12, 18))
         }
 
         stateText = TextView(this).apply {
             setTextColor(Color.WHITE)
-            textSize = 14f
-            text = "v5 · progress 0.000 · fx -- · detecting surface"
+            textSize = 13f
+            text = "v6 snapshot POC · waiting for hinge"
         }
-        controls.addView(
-            stateText,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
+        controls.addView(stateText)
+
+        snapshotStatusText = TextView(this).apply {
+            setTextColor(Color.LTGRAY)
+            textSize = 12f
+        }
+        controls.addView(snapshotStatusText)
+
+        presentationStatusText = TextView(this).apply {
+            setTextColor(Color.LTGRAY)
+            textSize = 11f
+            maxLines = 3
+        }
+        controls.addView(presentationStatusText)
 
         progressSeekBar = SeekBar(this).apply {
             max = SEEK_MAX
@@ -130,6 +157,7 @@ class MainActivity : Activity() {
                     if (!fromUser) return
                     val progress = value.toFloat() / SEEK_MAX.toFloat()
                     val opening = progress >= lastProgress
+                    lastAngle = progress * 180f
                     applyProgress(progress, opening, "manual")
                 }
 
@@ -150,24 +178,54 @@ class MainActivity : Activity() {
             ),
         )
 
-        effectTestButton = Button(this).apply {
-            isAllCaps = false
-            text = "Force 50% spatial FX · diagnostic"
-            setOnClickListener {
-                sensorMode = false
-                hingeMonitor.stop()
-                progressSeekBar.progress = SEEK_MAX / 2
-                applyProgress(0.5f, true, "forced 90°")
-                updateModeButton()
-            }
+        val importRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
         }
-        controls.addView(
-            effectTestButton,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
+        importRow.addView(
+            Button(this).apply {
+                isAllCaps = false
+                text = "Pick cover shot"
+                setOnClickListener { pickSnapshot(REQUEST_COVER_SNAPSHOT) }
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
         )
+        importRow.addView(
+            Button(this).apply {
+                isAllCaps = false
+                text = "Pick inner shot"
+                setOnClickListener { pickSnapshot(REQUEST_INNER_SNAPSHOT) }
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        controls.addView(importRow)
+
+        val actionRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        actionRow.addView(
+            Button(this).apply {
+                isAllCaps = false
+                text = "Force 90°"
+                setOnClickListener {
+                    sensorMode = false
+                    hingeMonitor.stop()
+                    lastAngle = 90f
+                    progressSeekBar.progress = SEEK_MAX / 2
+                    applyProgress(0.5f, true, "forced")
+                    updateModeButton()
+                }
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.72f),
+        )
+        actionRow.addView(
+            Button(this).apply {
+                isAllCaps = false
+                text = "Start 2-screen Presentation"
+                setOnClickListener { startPresentation() }
+            },
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.28f),
+        )
+        controls.addView(actionRow)
 
         modeButton = Button(this).apply {
             isAllCaps = false
@@ -194,7 +252,40 @@ class MainActivity : Activity() {
                 Gravity.BOTTOM,
             ),
         )
+
+        updateStateText()
         return root
+    }
+
+    private fun pickSnapshot(requestCode: Int) {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "image/*"
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+        @Suppress("DEPRECATION")
+        startActivityForResult(intent, requestCode)
+    }
+
+    private fun reloadSnapshots() {
+        coverBitmap = snapshotStore.loadOrFallback(SnapshotStore.Kind.COVER)
+        innerBitmap = snapshotStore.loadOrFallback(SnapshotStore.Kind.INNER)
+        transitionView.setSnapshots(coverBitmap, innerBitmap)
+        presentationController.updateSnapshots(coverBitmap, innerBitmap)
+        updateSnapshotStatus()
+    }
+
+    private fun startPresentation() {
+        presentationController.tryShow(
+            cover = coverBitmap,
+            inner = innerBitmap,
+            progress = lastProgress,
+            opening = lastOpening,
+        ) { status ->
+            runOnUiThread {
+                presentationStatusText.text = status
+            }
+        }
     }
 
     private fun applyProgress(progress: Float, opening: Boolean, source: String) {
@@ -203,38 +294,35 @@ class MainActivity : Activity() {
         lastOpening = opening
         lastSource = source
 
-        shader.setFloatUniform("progress", clamped)
-        shader.setFloatUniform("opening", if (opening) 1f else 0f)
-        shader.setFloatUniform("coverSurface", if (coverSurface) 1f else 0f)
-        refreshRenderEffect()
+        transitionView.updateProgress(clamped, opening)
+        presentationController.update(clamped, opening)
         updateStateText()
     }
 
-    private fun refreshRenderEffect() {
-        // Recreate the shader effect to explicitly dirty the RenderNode on each
-        // hinge update. There is intentionally no chained global blur in v5.
-        demoView.setRenderEffect(RenderEffect.createRuntimeShaderEffect(shader, "content"))
-        demoView.invalidate()
-    }
-
-    private fun transitionAmount(progress: Float): Float {
-        val t = progress.coerceIn(0f, 1f)
-        val linear = if (coverSurface) t else 1f - t
-        return linear.coerceIn(0f, 1f).pow(0.82f)
-    }
-
     private fun updateStateText() {
-        if (!::stateText.isInitialized) return
-        val amount = transitionAmount(lastProgress)
+        if (!::stateText.isInitialized || !::transitionView.isInitialized) return
+        val angle = if (lastAngle.isNaN()) lastProgress * 180f else lastAngle
+        val handoff = 1f - abs(lastProgress * 2f - 1f)
         stateText.text = String.format(
             Locale.US,
-            "v5 · progress %.3f  ·  fx %.0f%%  ·  %s  ·  %s  ·  %s",
+            "v6 · hinge %.1f° · progress %.3f · handoff %.0f%% · %s · %s · %s",
+            angle,
             lastProgress,
-            amount * 100f,
-            if (coverSurface) "cover" else "inner",
+            handoff.coerceIn(0f, 1f) * 100f,
+            if (transitionView.isCoverSurface()) "cover" else "inner",
             if (lastOpening) "opening" else "closing",
             lastSource,
         )
+    }
+
+    private fun updateSnapshotStatus() {
+        if (!::snapshotStatusText.isInitialized) return
+        snapshotStatusText.text = buildString {
+            append("snapshots · cover ")
+            append(if (snapshotStore.hasSnapshot(SnapshotStore.Kind.COVER)) "imported" else "fallback")
+            append(" · inner ")
+            append(if (snapshotStore.hasSnapshot(SnapshotStore.Kind.INNER)) "imported" else "fallback")
+        }
     }
 
     private fun updateModeButton() {
@@ -246,10 +334,9 @@ class MainActivity : Activity() {
         modeButton.isEnabled = hingeMonitor.isAvailable
     }
 
-    private fun formatAngle(value: Float): String = String.format(Locale.US, "%.1f", value)
-
     companion object {
         private const val SEEK_MAX = 1000
-        private const val COVER_ASPECT_THRESHOLD = 0.62f
+        private const val REQUEST_COVER_SNAPSHOT = 3101
+        private const val REQUEST_INNER_SNAPSHOT = 3102
     }
 }
