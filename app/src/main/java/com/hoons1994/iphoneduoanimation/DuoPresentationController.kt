@@ -22,8 +22,6 @@ class DuoPresentationController(private val activity: Activity) {
             .map { it.displayId }
             .toSet()
         val builtInIds = runCatching {
-            // Android 17 / API 37 adds this category. Use the literal so the
-            // diagnostic can still run on older platform releases.
             displayManager.getDisplays(BUILT_IN_DISPLAY_CATEGORY)
                 .map { it.displayId }
                 .toSet()
@@ -48,6 +46,7 @@ class DuoPresentationController(private val activity: Activity) {
         inner: Bitmap,
         progress: Float,
         opening: Boolean,
+        handoffProgress: Float,
         onStatus: (String) -> Unit,
     ) {
         statusListener = onStatus
@@ -57,8 +56,6 @@ class DuoPresentationController(private val activity: Activity) {
             .getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION)
             .filter { it.displayId != currentId }
 
-        // API 37 can expose inactive/disabled built-in displays here even when
-        // getDisplays() only reports the currently active logical display.
         val builtInDisplays = runCatching {
             displayManager.getDisplays(BUILT_IN_DISPLAY_CATEGORY)
                 .filter { it.displayId != currentId }
@@ -92,6 +89,7 @@ class DuoPresentationController(private val activity: Activity) {
             inner = inner,
             progress = progress,
             opening = opening,
+            handoffProgress = handoffProgress,
             onStopped = {
                 if (presentation === it) {
                     presentation = null
@@ -125,6 +123,10 @@ class DuoPresentationController(private val activity: Activity) {
 
     fun update(progress: Float, opening: Boolean) {
         presentation?.updateProgress(progress, opening)
+    }
+
+    fun updateHandoffProgress(value: Float) {
+        presentation?.updateHandoffProgress(value)
     }
 
     fun updateSnapshots(cover: Bitmap, inner: Bitmap) {
@@ -167,6 +169,7 @@ class DuoPresentationController(private val activity: Activity) {
         private var inner: Bitmap,
         private var progress: Float,
         private var opening: Boolean,
+        private var handoffProgress: Float,
         private val onStopped: (SnapshotPresentation) -> Unit,
     ) : Presentation(activity, targetDisplay, android.R.style.Theme_Material_NoActionBar) {
 
@@ -176,6 +179,7 @@ class DuoPresentationController(private val activity: Activity) {
             super.onCreate(savedInstanceState)
             transitionView = SnapshotTransitionView(context).apply {
                 setSnapshots(cover, inner)
+                setHandoffProgress(handoffProgress)
                 updateProgress(progress, opening)
             }
             setContentView(
@@ -205,6 +209,13 @@ class DuoPresentationController(private val activity: Activity) {
             opening = isOpening
             if (::transitionView.isInitialized) {
                 transitionView.updateProgress(progress, opening)
+            }
+        }
+
+        fun updateHandoffProgress(value: Float) {
+            handoffProgress = value
+            if (::transitionView.isInitialized) {
+                transitionView.setHandoffProgress(value)
             }
         }
 
