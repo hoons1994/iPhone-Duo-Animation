@@ -67,24 +67,27 @@ object SnapshotTransitionShader {
         }
 
         half4 blur9(float2 p, float radius) {
-            // Compact weighted kernel. Keeping the taps close avoids the
-            // duplicated-icon trails from the early screenshot cross-fade POC.
-            float r1 = radius * 0.34;
-            float r2 = radius * 0.72;
-            float d = radius * 0.50;
+            // Most of normal phone use is outside the fold handoff. Avoid nine
+            // redundant texture reads when the requested blur is effectively zero.
+            if (radius < 0.75) {
+                return sampleSurface(p);
+            }
 
-            half4 c = sampleSurface(p) * 5.4;
-            c += sampleSurface(p + float2(r1, 0.0)) * 1.15;
-            c += sampleSurface(p - float2(r1, 0.0)) * 1.15;
-            c += sampleSurface(p + float2(0.0, r1)) * 1.15;
-            c += sampleSurface(p - float2(0.0, r1)) * 1.15;
-            c += sampleSurface(p + float2(d, d)) * 0.48;
-            c += sampleSurface(p - float2(d, d)) * 0.48;
-            c += sampleSurface(p + float2(d, -d)) * 0.48;
-            c += sampleSurface(p - float2(d, -d)) * 0.48;
-            c += sampleSurface(p + float2(r2, 0.0)) * 0.30;
-            c += sampleSurface(p - float2(r2, 0.0)) * 0.30;
-            return c / 12.52;
+            // Nine-tap compact kernel. The early prototypes used wider extra
+            // samples that looked like duplicated icons and cost more GPU work.
+            float r1 = radius * 0.40;
+            float d = radius * 0.52;
+
+            half4 c = sampleSurface(p) * 4.8;
+            c += sampleSurface(p + float2(r1, 0.0)) * 1.10;
+            c += sampleSurface(p - float2(r1, 0.0)) * 1.10;
+            c += sampleSurface(p + float2(0.0, r1)) * 1.10;
+            c += sampleSurface(p - float2(0.0, r1)) * 1.10;
+            c += sampleSurface(p + float2(d, d)) * 0.55;
+            c += sampleSurface(p - float2(d, d)) * 0.55;
+            c += sampleSurface(p + float2(d, -d)) * 0.55;
+            c += sampleSurface(p - float2(d, -d)) * 0.55;
+            return c / 11.40;
         }
 
         half4 main(float2 p) {
