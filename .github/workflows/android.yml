@@ -28,6 +28,9 @@ jobs:
       - name: Run unit tests
         run: gradle :app:testDebugUnitTest
 
+      - name: Run Android lint
+        run: gradle :app:lintDebug
+
       - name: Assemble debug APK
         run: gradle :app:assembleDebug
 
@@ -57,12 +60,6 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.6.0'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install compile SDK
-        run: sdkmanager "platforms;android-37" "platform-tools"
 
       - name: Enable KVM
         run: |
