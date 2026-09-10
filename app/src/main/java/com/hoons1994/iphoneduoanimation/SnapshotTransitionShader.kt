@@ -41,15 +41,15 @@ object SnapshotTransitionShader {
         half4 sampleTransition(float2 p) {
             float t = clamp(progress, 0.0, 1.0);
 
-            // The cover image dominates while closed; the inner image takes
-            // over as the device opens. A fairly broad hand-off keeps the
-            // transition continuous through normal hand-driven fold speeds.
-            float handoff = smoothstep(0.27, 0.73, t);
+            // Keep both snapshots fully visible for as little time as possible.
+            // The blur peak around the midpoint hides the geometry mismatch;
+            // a wide cross-fade creates obvious doubled icons on real screens.
+            float handoff = smoothstep(0.42, 0.58, t);
 
-            // Geometry settles toward the destination instead of simply
-            // cross-fading two static screenshots.
-            float coverScale = mix(1.0, 0.935, handoff);
-            float innerScale = mix(1.075, 1.0, handoff);
+            // Geometry correction is intentionally modest. Large scale
+            // differences read as a zoom rather than a display hand-off.
+            float coverScale = mix(1.0, 0.985, handoff);
+            float innerScale = mix(1.015, 1.0, handoff);
 
             float2 coverCoord = aspectFillCoord(p, coverSize, coverScale);
             float2 innerCoord = aspectFillCoord(p, innerSize, innerScale);
@@ -81,11 +81,11 @@ object SnapshotTransitionShader {
         half4 main(float2 p) {
             float t = clamp(progress, 0.0, 1.0);
 
-            // Blur is strongest during the display hand-off and resolves at
-            // the two physical endpoints. This is independent of the image
-            // blend so we can tune focus and geometry separately.
-            float handoffPeak = max(1.0 - abs((t * 2.0) - 1.0), 0.0);
-            handoffPeak = pow(handoffPeak, 0.62);
+            // Concentrate focus loss closer to the actual hand-off instead of
+            // keeping the entire 0..1 fold range soft.
+            float midpointDistance = abs(t - 0.5) * 2.0;
+            float handoffPeak = 1.0 - smoothstep(0.0, 0.78, midpointDistance);
+            handoffPeak = pow(max(handoffPeak, 0.0), 0.72);
 
             // Inner display: hinge is in the center. Cover display: on a
             // book-style Galaxy Fold in portrait, the hinge is the left edge.
@@ -98,14 +98,12 @@ object SnapshotTransitionShader {
 
             // Progressive focus: nearly sharp at the hinge and increasingly
             // blurred toward the physical outer edge(s).
-            float spatial = smoothstep(0.03, 0.98, hingeDistance);
-            spatial = pow(spatial, 0.70);
+            float spatial = smoothstep(0.06, 0.98, hingeDistance);
+            spatial = pow(spatial, 0.76);
 
-            // A small directional bias makes opening and closing feel less
-            // like a symmetric filter and more like a moving hand-off.
             float x01 = p.x / max(resolution.x, 1.0);
             float travel = opening > 0.5 ? x01 : (1.0 - x01);
-            float directional = mix(0.94, 1.06, travel);
+            float directional = mix(0.96, 1.04, travel);
 
             float radius = maxBlurPx * handoffPeak * spatial * directional;
             return blur9(p, radius);
