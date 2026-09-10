@@ -3,9 +3,9 @@ package com.hoons1994.iphoneduoanimation
 /**
  * Surface-handoff renderer for the Galaxy Fold POC.
  *
- * Unlike the earlier cross-fade prototype, the active physical display owns
- * one snapshot at a time. One UI performs the real cover/inner display handoff;
- * this shader hides that switch with a focus peak and complementary geometry.
+ * The active physical display owns one snapshot at a time. One UI performs the
+ * real cover/inner display handoff; this shader hides that switch with a focus
+ * peak and complementary geometry on the outgoing/incoming surfaces.
  */
 object SnapshotTransitionShader {
     const val SOURCE = """
@@ -50,14 +50,13 @@ object SnapshotTransitionShader {
             float t = clamp(progress, 0.0, 1.0);
             float h = clamp(handoffProgress, 0.2, 0.8);
 
-            // Cover approaches the handoff with a tiny contraction. The inner
-            // display appears slightly expanded at the handoff and settles as
-            // the device reaches the fully open endpoint. Reversing the hinge
-            // naturally reverses the geometry.
-            float coverApproach = smoother(h - 0.28, h, t);
-            float innerSettle = smoother(h, h + 0.30, t);
-            float coverScale = mix(1.0, 0.986, coverApproach);
-            float innerScale = mix(1.014, 1.0, innerSettle);
+            // Cover contracts slightly as it approaches the physical switch.
+            // Inner starts slightly expanded at the switch and settles toward
+            // its endpoint. Reversing the hinge naturally reverses the motion.
+            float coverApproach = smoother(h - 0.24, h, t);
+            float innerSettle = smoother(h, h + 0.24, t);
+            float coverScale = mix(1.0, 0.990, coverApproach);
+            float innerScale = mix(1.010, 1.0, innerSettle);
 
             float2 coverCoord = aspectFillCoord(p, coverSize, coverScale);
             float2 innerCoord = aspectFillCoord(p, innerSize, innerScale);
@@ -68,24 +67,24 @@ object SnapshotTransitionShader {
         }
 
         half4 blur9(float2 p, float radius) {
-            // Small-radius weighted kernel: enough to hide the display switch
-            // without producing the duplicated-icon trails seen in v6/v7.
-            float r1 = radius * 0.38;
-            float r2 = radius * 0.78;
-            float d = radius * 0.54;
+            // Compact weighted kernel. Keeping the taps close avoids the
+            // duplicated-icon trails from the early screenshot cross-fade POC.
+            float r1 = radius * 0.34;
+            float r2 = radius * 0.72;
+            float d = radius * 0.50;
 
-            half4 c = sampleSurface(p) * 5.0;
-            c += sampleSurface(p + float2(r1, 0.0)) * 1.2;
-            c += sampleSurface(p - float2(r1, 0.0)) * 1.2;
-            c += sampleSurface(p + float2(0.0, r1)) * 1.2;
-            c += sampleSurface(p - float2(0.0, r1)) * 1.2;
-            c += sampleSurface(p + float2(d, d)) * 0.55;
-            c += sampleSurface(p - float2(d, d)) * 0.55;
-            c += sampleSurface(p + float2(d, -d)) * 0.55;
-            c += sampleSurface(p - float2(d, -d)) * 0.55;
-            c += sampleSurface(p + float2(r2, 0.0)) * 0.35;
-            c += sampleSurface(p - float2(r2, 0.0)) * 0.35;
-            return c / 12.6;
+            half4 c = sampleSurface(p) * 5.4;
+            c += sampleSurface(p + float2(r1, 0.0)) * 1.15;
+            c += sampleSurface(p - float2(r1, 0.0)) * 1.15;
+            c += sampleSurface(p + float2(0.0, r1)) * 1.15;
+            c += sampleSurface(p - float2(0.0, r1)) * 1.15;
+            c += sampleSurface(p + float2(d, d)) * 0.48;
+            c += sampleSurface(p - float2(d, d)) * 0.48;
+            c += sampleSurface(p + float2(d, -d)) * 0.48;
+            c += sampleSurface(p - float2(d, -d)) * 0.48;
+            c += sampleSurface(p + float2(r2, 0.0)) * 0.30;
+            c += sampleSurface(p - float2(r2, 0.0)) * 0.30;
+            return c / 12.98;
         }
 
         half4 main(float2 p) {
@@ -93,15 +92,16 @@ object SnapshotTransitionShader {
             float h = clamp(handoffProgress, 0.2, 0.8);
             float window = max(focusWindow, 0.05);
 
-            // Focus loss peaks exactly where One UI changes active displays,
-            // then resolves in either direction. This peak can be calibrated
-            // from the actual angle at which the View changes cover/inner size.
-            float distanceFromHandoff = abs(t - h);
-            float focus = 1.0 - smoother(0.0, window, distanceFromHandoff);
+            // Surface-aware focus envelope. If the outgoing display remains
+            // active past the expected handoff, keep it maximally masked rather
+            // than letting the blur resolve before One UI actually switches.
+            float coverFocus = smoother(h - window, h, t);
+            float innerFocus = 1.0 - smoother(h, h + window, t);
+            float focus = coverSurface > 0.5 ? coverFocus : innerFocus;
 
-            // Cover hinge is on the long inner edge; inner display hinge is the
+            // Cover hinge is the long inner edge; inner display hinge is the
             // vertical center line. Keep the hinge region relatively sharp and
-            // increase blur toward the outer edge(s), matching the reference cue.
+            // increase blur toward the physical outer edge(s).
             float innerHingeDistance = abs(p.x - resolution.x * 0.5) /
                 max(resolution.x * 0.5, 1.0);
             float coverHingeDistance = p.x / max(resolution.x, 1.0);
@@ -109,16 +109,19 @@ object SnapshotTransitionShader {
                 ? clamp(coverHingeDistance, 0.0, 1.0)
                 : clamp(innerHingeDistance, 0.0, 1.0);
 
-            float spatial = pow(smoother(0.03, 0.98, hingeDistance), 0.72);
-            spatial = mix(0.10, 1.0, spatial);
+            float spatial = pow(smoother(0.04, 0.98, hingeDistance), 0.76);
+            spatial = mix(0.08, 1.0, spatial);
 
             float x01 = p.x / max(resolution.x, 1.0);
             float travel = opening > 0.5 ? x01 : (1.0 - x01);
-            float directional = mix(0.97, 1.03, travel);
+            float directional = mix(0.98, 1.02, travel);
 
             float radius = maxBlurPx * focus * spatial * directional;
             half4 color = blur9(p, radius);
-            float dim = 1.0 - (0.035 * focus * spatial);
+
+            // Tiny luminance dip makes the focus handoff read as depth without
+            // turning the transition into an obvious fade-to-black.
+            float dim = 1.0 - (0.022 * focus * spatial);
             return half4(color.rgb * half(dim), color.a);
         }
     """
