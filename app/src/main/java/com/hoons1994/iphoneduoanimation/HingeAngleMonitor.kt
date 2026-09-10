@@ -5,61 +5,37 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import kotlin.math.abs
 
 class HingeAngleMonitor(
     context: Context,
-    private val onAngleChanged: (angleDegrees: Float, progress: Float, opening: Boolean) -> Unit,
+    private val onAngleChanged: (HingeSignalFilter.Output) -> Unit,
 ) : SensorEventListener {
 
     private val sensorManager = context.getSystemService(SensorManager::class.java)
     private val hingeSensor = sensorManager.getDefaultSensor(Sensor.TYPE_HINGE_ANGLE)
-
-    private var smoothedAngle = Float.NaN
-    private var previousAngle = Float.NaN
-    private var opening = true
+    private val signalFilter = HingeSignalFilter()
+    private var registered = false
 
     val isAvailable: Boolean
         get() = hingeSensor != null
 
     fun start() {
+        if (registered) return
         val sensor = hingeSensor ?: return
-        sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME)
+        signalFilter.reset()
+        registered = sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME)
     }
 
     fun stop() {
+        if (!registered) return
         sensorManager.unregisterListener(this)
+        registered = false
     }
 
     override fun onSensorChanged(event: SensorEvent) {
         if (event.sensor.type != Sensor.TYPE_HINGE_ANGLE || event.values.isEmpty()) return
-
-        val raw = event.values[0].coerceIn(0f, 180f)
-        smoothedAngle = if (smoothedAngle.isNaN()) {
-            raw
-        } else {
-            smoothedAngle + (raw - smoothedAngle) * SMOOTHING_ALPHA
-        }
-
-        if (!previousAngle.isNaN()) {
-            val delta = smoothedAngle - previousAngle
-            if (abs(delta) >= DIRECTION_DEADBAND_DEGREES) {
-                opening = delta > 0f
-            }
-        }
-        previousAngle = smoothedAngle
-
-        onAngleChanged(
-            smoothedAngle,
-            (smoothedAngle / 180f).coerceIn(0f, 1f),
-            opening,
-        )
+        onAngleChanged(signalFilter.update(event.values[0]))
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
-
-    companion object {
-        private const val SMOOTHING_ALPHA = 0.22f
-        private const val DIRECTION_DEADBAND_DEGREES = 0.25f
-    }
 }
