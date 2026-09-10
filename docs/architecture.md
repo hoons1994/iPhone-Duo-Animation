@@ -4,7 +4,7 @@
 
 The iPhone Duo transition appears to treat fold progress as a continuous visual state instead of waiting for a binary open/closed event. Public hands-on reporting describes content gradually coming into focus while the phone opens and closes. Early recreations also point to a spatially progressive blur: the effect is not equally strong at every pixel.
 
-Our first approximation therefore uses this model:
+The Galaxy Fold prototype now uses the system's real cover/inner display handoff instead of trying to keep two full screenshots cross-faded on one surface:
 
 ```
 physical hinge angle
@@ -13,53 +13,78 @@ low-pass smoothing
       ↓
 normalized progress (0..1)
       ↓
-transition peak = sin(progress × π)
+learned One UI display-handoff progress
+      ↓
+focus peak around that handoff
       ↓
 spatial mask (hinge → outer edge)
       ↓
-AGSL blur + subtle focus/scale
+cover snapshot on cover display
+      │
+      └─ One UI switches active display ─→ inner snapshot on inner display
+                                          ↓
+                              focus resolves toward fully open
 ```
 
-The sine-shaped peak is deliberate: both fully closed and fully open endpoints should be sharp, while the strongest defocus occurs between them.
+This avoids the obvious doubled icons produced by the earlier wide screenshot cross-fade. The physical display switch becomes part of the animation instead of something the app tries to fake.
+
+## Adaptive handoff calibration
+
+`TransitionTuning` contains pure, unit-tested transition math. The app begins with a conservative handoff estimate and watches for a real View size/aspect change between cover and inner surfaces while the hinge sensor is active. The observed hinge progress is folded into separate opening and closing estimates with a low-pass update, then persisted.
+
+Separate opening/closing calibration matters because One UI can apply hysteresis: the angle at which the device moves from cover to inner does not have to be identical to the reverse transition.
 
 ## Renderer
 
-`DuoShader` is intentionally parameterized. The shader currently exposes:
+`SnapshotTransitionView` owns an AGSL `RuntimeShader` with two bitmap inputs:
 
-- `progress`: normalized hinge progress
-- `opening`: direction hint
-- `maxBlurPx`: peak blur strength
-- `scaleDip`: midpoint scale/focus adjustment
-- `resolution`: current rendering surface dimensions
+- `coverSnapshot`
+- `innerSnapshot`
+- `progress`
+- `opening`
+- `coverSurface`
+- `handoffProgress`
+- `focusWindow`
+- `maxBlurPx`
+- `resolution`
 
-The shader uses a lightweight 9-tap blur. This is not expected to be the final kernel; it is chosen so the first device test can answer the more important question: whether the spatial blur distribution and hinge coupling feel correct.
+Only the snapshot belonging to the active physical surface is rendered during real hinge operation. Geometry changes slightly as the surface approaches or leaves the handoff. Blur peaks at the learned handoff and remains spatial: the hinge region stays relatively sharp while the outer edge receives the strongest defocus.
+
+An automatic preview mode can override the surface role on a single display so the complete cover-to-inner sequence can be inspected without repeatedly folding the device. This override is diagnostic only; sensor mode always follows the physical surface.
 
 ## Sensor path
 
 `HingeAngleMonitor` reads `Sensor.TYPE_HINGE_ANGLE`, clamps the book-style fold range to 0–180°, applies an exponential low-pass filter, and derives opening/closing direction with a small deadband.
 
-Sensor smoothing is kept outside the renderer so we can later replace it with a predictive or velocity-aware filter without changing shader code.
+Sensor smoothing is kept outside the renderer so it can later be replaced with a predictive or velocity-aware filter without changing shader code.
 
-## Why the first build is an in-app demo
+## Presentation path
 
-A regular Android application does not own the system compositor or Samsung's fold/unfold transition. It cannot simply replace SystemUI's screen-switch animation for every app.
+`DuoPresentationController` remains an optional experiment rather than the primary strategy. It enumerates both normal presentation displays and the API 37 built-in display category, including inactive built-in displays when the platform exposes them. If Samsung marks another built-in display as presentation-capable, the same snapshot renderer can run there.
 
-There are several increasingly invasive paths we can investigate after the renderer looks right:
+On the tested Galaxy Fold configuration so far, only the current built-in logical display has been exposed to the app, so the primary non-root path is the active-display handoff described above.
 
-1. **In-app renderer** — highest fidelity and lowest risk; validates the visual model.
-2. **Presentation / multi-display experiment** — render controlled surfaces on available internal displays where Android/Samsung policy permits it.
+## Integration tiers
+
+A regular Android application does not own the system compositor or Samsung's fold/unfold transition and cannot simply replace SystemUI's screen-switch animation for every app.
+
+1. **Active-display snapshot renderer** — current primary POC; uses One UI's own cover/inner handoff and applies our transition on the currently active surface.
+2. **Presentation / multi-display experiment** — uses a second controlled internal display if Android/Samsung policy exposes one.
 3. **Launcher implementation** — can make the home-screen fold transition feel native, but cannot replace transitions inside arbitrary apps.
 4. **Snapshot / MediaProjection experiment** — can transform captured content, but introduces user consent, latency, secure-content exclusions, and privacy constraints.
 5. **Accessibility overlay experiment** — useful for masks/fades, but still does not grant direct access to another app's live render surface.
 6. **Root / SystemUI module** — closest to a true system-level replacement, but outside normal Play-distributable app capabilities.
 
-The project should keep the core transition engine independent of whichever integration path proves viable.
+The core transition engine remains independent of the integration layer so the calibrated shader/math can be reused by a launcher, MediaProjection prototype, or root/SystemUI implementation later.
 
-## Immediate calibration tasks
+## CI validation
 
-- Record the reference animation at high frame rate from several public hands-on clips.
-- Measure blur strength versus distance from hinge at several fold angles.
-- Check whether the blur maximum is actually at ~90° or shifted toward one endpoint.
-- Measure any simultaneous scale, opacity, translation, or layout morph.
-- Tune opening and closing separately if their curves differ.
-- Test sensor latency and event cadence on a Samsung Galaxy Z Fold device.
+GitHub Actions runs the pure transition unit tests before assembling each debug APK. The tests currently verify endpoint focus behavior, symmetry around the handoff, bounded adaptive calibration, and deterministic preview surface switching.
+
+## Next calibration tasks
+
+- Import matched cover and inner home-screen screenshots and calibrate their crop/geometry.
+- Record the actual One UI opening and closing handoff angles over multiple cycles and validate the adaptive estimate.
+- Measure blur strength versus distance from hinge against the iPhone Duo reference.
+- Add velocity-aware damping so a fast snap-open does not visually lag behind the physical hinge.
+- Investigate a launcher-hosted renderer after the in-app active-display handoff is visually convincing.
