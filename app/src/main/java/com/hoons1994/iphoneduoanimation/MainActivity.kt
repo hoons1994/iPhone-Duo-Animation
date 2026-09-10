@@ -40,8 +40,8 @@ class MainActivity : Activity() {
         shader.setFloatUniform("progress", 0f)
         shader.setFloatUniform("opening", 1f)
         shader.setFloatUniform("coverSurface", 0f)
-        shader.setFloatUniform("maxBlurPx", 12f * resources.displayMetrics.density)
-        shader.setFloatUniform("scaleDip", 0.014f)
+        shader.setFloatUniform("maxBlurPx", 20f * resources.displayMetrics.density)
+        shader.setFloatUniform("scaleDip", 0.010f)
 
         hingeMonitor = HingeAngleMonitor(this) { angle, progress, opening ->
             if (!sensorMode || userDragging) return@HingeAngleMonitor
@@ -112,7 +112,7 @@ class MainActivity : Activity() {
         stateText = TextView(this).apply {
             setTextColor(Color.WHITE)
             textSize = 14f
-            text = "progress 0.000 · fx -- · detecting surface"
+            text = "v5 · progress 0.000 · fx -- · detecting surface"
         }
         controls.addView(
             stateText,
@@ -152,7 +152,7 @@ class MainActivity : Activity() {
 
         effectTestButton = Button(this).apply {
             isAllCaps = false
-            text = "Force hinge midpoint · diagnostic"
+            text = "Force 50% spatial FX · diagnostic"
             setOnClickListener {
                 sensorMode = false
                 hingeMonitor.stop()
@@ -211,9 +211,8 @@ class MainActivity : Activity() {
     }
 
     private fun refreshRenderEffect() {
-        // Recreate the shader effect to explicitly dirty the RenderNode on
-        // each hinge update. v4 intentionally has no chained global blur:
-        // all defocus now comes from the spatially varying AGSL shader.
+        // Recreate the shader effect to explicitly dirty the RenderNode on each
+        // hinge update. There is intentionally no chained global blur in v5.
         demoView.setRenderEffect(RenderEffect.createRuntimeShaderEffect(shader, "content"))
         demoView.invalidate()
     }
@@ -221,7 +220,7 @@ class MainActivity : Activity() {
     private fun transitionAmount(progress: Float): Float {
         val t = progress.coerceIn(0f, 1f)
         val linear = if (coverSurface) t else 1f - t
-        return linear.coerceIn(0f, 1f).pow(0.90f)
+        return linear.coerceIn(0f, 1f).pow(0.82f)
     }
 
     private fun updateStateText() {
@@ -229,7 +228,7 @@ class MainActivity : Activity() {
         val amount = transitionAmount(lastProgress)
         stateText.text = String.format(
             Locale.US,
-            "progress %.3f  ·  fx %.0f%%  ·  %s  ·  %s  ·  %s",
+            "v5 · progress %.3f  ·  fx %.0f%%  ·  %s  ·  %s  ·  %s",
             lastProgress,
             amount * 100f,
             if (coverSurface) "cover" else "inner",
