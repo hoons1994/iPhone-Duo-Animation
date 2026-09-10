@@ -1,5 +1,6 @@
 package com.hoons1994.iphoneduoanimation
 
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Bitmap
@@ -7,13 +8,13 @@ import android.graphics.Color
 import android.os.Bundle
 import android.view.Gravity
 import android.view.ViewGroup
+import android.view.animation.LinearInterpolator
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import java.util.Locale
-import kotlin.math.abs
 
 class MainActivity : Activity() {
 
@@ -30,6 +31,7 @@ class MainActivity : Activity() {
     private lateinit var snapshotStatusText: TextView
     private lateinit var presentationStatusText: TextView
     private lateinit var modeButton: Button
+    private lateinit var demoButton: Button
 
     private var sensorMode = false
     private var userDragging = false
@@ -38,8 +40,27 @@ class MainActivity : Activity() {
     private var lastAngle = Float.NaN
     private var lastSource = "startup"
 
+    private var openingHandoff = TransitionTuning.DEFAULT_HANDOFF_PROGRESS
+    private var closingHandoff = TransitionTuning.DEFAULT_HANDOFF_PROGRESS
+    private var physicalSurfaceInitialized = false
+    private var lastPhysicalCover: Boolean? = null
+    private var autoAnimator: ValueAnimator? = null
+
+    private val tuningPrefs by lazy {
+        getSharedPreferences("duo_transition_tuning", MODE_PRIVATE)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        openingHandoff = tuningPrefs.getFloat(
+            KEY_OPENING_HANDOFF,
+            TransitionTuning.DEFAULT_HANDOFF_PROGRESS,
+        )
+        closingHandoff = tuningPrefs.getFloat(
+            KEY_CLOSING_HANDOFF,
+            TransitionTuning.DEFAULT_HANDOFF_PROGRESS,
+        )
 
         snapshotStore = SnapshotStore(this)
         coverBitmap = snapshotStore.loadOrFallback(SnapshotStore.Kind.COVER)
@@ -47,7 +68,7 @@ class MainActivity : Activity() {
         presentationController = DuoPresentationController(this)
 
         hingeMonitor = HingeAngleMonitor(this) { angle, progress, opening ->
-            if (!sensorMode || userDragging) return@HingeAngleMonitor
+            if (!sensorMode || userDragging || autoAnimator != null) return@HingeAngleMonitor
             runOnUiThread {
                 lastAngle = angle
                 applyProgress(progress, opening, "hinge")
@@ -64,7 +85,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        if (sensorMode) hingeMonitor.start()
+        if (sensorMode && autoAnimator == null) hingeMonitor.start()
         if (::presentationStatusText.isInitialized) {
             presentationStatusText.text = "Displays · ${presentationController.describeDisplays()}"
         }
@@ -76,6 +97,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        stopAutoDemo(restorePhysicalSurface = false)
         presentationController.dismiss()
         super.onDestroy()
     }
@@ -104,9 +126,10 @@ class MainActivity : Activity() {
 
         transitionView = SnapshotTransitionView(this).apply {
             setSnapshots(coverBitmap, innerBitmap)
+            setHandoffProgress(currentHandoff(lastOpening))
             updateProgress(lastProgress, lastOpening)
-            onSurfaceChanged = {
-                updateStateText()
+            onSurfaceChanged = { isCover ->
+                handlePhysicalSurfaceChange(isCover)
             }
         }
         root.addView(
@@ -126,13 +149,13 @@ class MainActivity : Activity() {
                 (14f * density).toInt(),
                 (14f * density).toInt(),
             )
-            setBackgroundColor(Color.argb(225, 10, 12, 18))
+            setBackgroundColor(Color.argb(226, 10, 12, 18))
         }
 
         stateText = TextView(this).apply {
             setTextColor(Color.WHITE)
             textSize = 13f
-            text = "v6 snapshot POC · waiting for hinge"
+            text = "v8 handoff engine · waiting for surface"
         }
         controls.addView(stateText)
 
@@ -144,8 +167,8 @@ class MainActivity : Activity() {
 
         presentationStatusText = TextView(this).apply {
             setTextColor(Color.LTGRAY)
-            textSize = 11f
-            maxLines = 3
+            textSize = 10f
+            maxLines = 5
         }
         controls.addView(presentationStatusText)
 
@@ -155,6 +178,7 @@ class MainActivity : Activity() {
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(seekBar: SeekBar?, value: Int, fromUser: Boolean) {
                     if (!fromUser) return
+                    stopAutoDemo()
                     val progress = value.toFloat() / SEEK_MAX.toFloat()
                     val opening = progress >= lastProgress
                     lastAngle = progress * 180f
@@ -199,37 +223,53 @@ class MainActivity : Activity() {
         )
         controls.addView(importRow)
 
-        val actionRow = LinearLayout(this).apply {
+        val previewRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
         }
-        actionRow.addView(
+        demoButton = Button(this).apply {
+            isAllCaps = false
+            text = "Auto preview"
+            setOnClickListener { toggleAutoDemo() }
+        }
+        previewRow.addView(
+            demoButton,
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+        )
+        previewRow.addView(
             Button(this).apply {
                 isAllCaps = false
-                text = "Force 90°"
+                text = "Force handoff"
                 setOnClickListener {
+                    stopAutoDemo()
                     sensorMode = false
                     hingeMonitor.stop()
-                    lastAngle = 90f
-                    progressSeekBar.progress = SEEK_MAX / 2
-                    applyProgress(0.5f, true, "forced")
+                    val handoff = currentHandoff(lastOpening)
+                    lastAngle = handoff * 180f
+                    progressSeekBar.progress = (handoff * SEEK_MAX).toInt()
+                    applyProgress(handoff, lastOpening, "forced handoff")
                     updateModeButton()
                 }
             },
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.72f),
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
         )
-        actionRow.addView(
+        controls.addView(previewRow)
+
+        controls.addView(
             Button(this).apply {
                 isAllCaps = false
-                text = "Start 2-screen Presentation"
+                text = "Try 2-screen Presentation"
                 setOnClickListener { startPresentation() }
             },
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.28f),
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ),
         )
-        controls.addView(actionRow)
 
         modeButton = Button(this).apply {
             isAllCaps = false
             setOnClickListener {
+                stopAutoDemo()
                 sensorMode = hingeMonitor.isAvailable && !sensorMode
                 hingeMonitor.stop()
                 if (sensorMode) hingeMonitor.start()
@@ -276,11 +316,13 @@ class MainActivity : Activity() {
     }
 
     private fun startPresentation() {
+        val handoff = currentHandoff(lastOpening)
         presentationController.tryShow(
             cover = coverBitmap,
             inner = innerBitmap,
             progress = lastProgress,
             opening = lastOpening,
+            handoffProgress = handoff,
         ) { status ->
             runOnUiThread {
                 presentationStatusText.text = status
@@ -288,40 +330,140 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun handlePhysicalSurfaceChange(isCover: Boolean) {
+        val previous = lastPhysicalCover
+        lastPhysicalCover = isCover
+
+        if (!physicalSurfaceInitialized) {
+            physicalSurfaceInitialized = true
+            updateStateText()
+            return
+        }
+
+        if (
+            previous != null &&
+            previous != isCover &&
+            sensorMode &&
+            autoAnimator == null &&
+            !lastAngle.isNaN()
+        ) {
+            val observed = TransitionTuning.clampProgress(lastAngle / 180f)
+            if (lastOpening) {
+                openingHandoff = TransitionTuning.updateHandoff(openingHandoff, observed)
+            } else {
+                closingHandoff = TransitionTuning.updateHandoff(closingHandoff, observed)
+            }
+            persistHandoffCalibration()
+            lastSource = "hinge + learned handoff"
+            val handoff = currentHandoff(lastOpening)
+            transitionView.setHandoffProgress(handoff)
+            presentationController.updateHandoffProgress(handoff)
+        }
+        updateStateText()
+    }
+
     private fun applyProgress(progress: Float, opening: Boolean, source: String) {
-        val clamped = progress.coerceIn(0f, 1f)
+        val clamped = TransitionTuning.clampProgress(progress)
         lastProgress = clamped
         lastOpening = opening
         lastSource = source
 
+        val handoff = currentHandoff(opening)
+        transitionView.setHandoffProgress(handoff)
         transitionView.updateProgress(clamped, opening)
+        presentationController.updateHandoffProgress(handoff)
         presentationController.update(clamped, opening)
         updateStateText()
+    }
+
+    private fun toggleAutoDemo() {
+        if (autoAnimator != null) {
+            stopAutoDemo()
+        } else {
+            startAutoDemo()
+        }
+    }
+
+    private fun startAutoDemo() {
+        stopAutoDemo()
+        sensorMode = false
+        hingeMonitor.stop()
+        updateModeButton()
+
+        val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 2400L
+            repeatCount = ValueAnimator.INFINITE
+            repeatMode = ValueAnimator.REVERSE
+            interpolator = LinearInterpolator()
+            addUpdateListener { valueAnimator ->
+                val progress = valueAnimator.animatedValue as Float
+                val opening = progress >= lastProgress
+                val handoff = currentHandoff(opening)
+                transitionView.setPreviewSurfaceOverride(
+                    TransitionTuning.coverForPreview(progress, handoff),
+                )
+                lastAngle = progress * 180f
+                progressSeekBar.progress = (progress * SEEK_MAX).toInt()
+                applyProgress(progress, opening, "auto preview")
+            }
+        }
+        autoAnimator = animator
+        demoButton.text = "Stop auto preview"
+        animator.start()
+    }
+
+    private fun stopAutoDemo(restorePhysicalSurface: Boolean = true) {
+        val animator = autoAnimator ?: return
+        autoAnimator = null
+        animator.cancel()
+        if (restorePhysicalSurface && ::transitionView.isInitialized) {
+            transitionView.setPreviewSurfaceOverride(null)
+            updateStateText()
+        }
+        if (::demoButton.isInitialized) demoButton.text = "Auto preview"
+    }
+
+    private fun currentHandoff(opening: Boolean): Float =
+        if (opening) openingHandoff else closingHandoff
+
+    private fun persistHandoffCalibration() {
+        tuningPrefs.edit()
+            .putFloat(KEY_OPENING_HANDOFF, openingHandoff)
+            .putFloat(KEY_CLOSING_HANDOFF, closingHandoff)
+            .apply()
     }
 
     private fun updateStateText() {
         if (!::stateText.isInitialized || !::transitionView.isInitialized) return
         val angle = if (lastAngle.isNaN()) lastProgress * 180f else lastAngle
-        val handoff = 1f - abs(lastProgress * 2f - 1f)
+        val handoff = currentHandoff(lastOpening)
+        val focus = TransitionTuning.focusPeak(lastProgress, handoff)
+        val physical = if (transitionView.isCoverSurface()) "cover" else "inner"
+        val rendered = if (transitionView.effectiveCoverSurface()) "cover" else "inner"
+        val surfaceLabel = if (physical == rendered) physical else "$physical→$rendered preview"
+
         stateText.text = String.format(
             Locale.US,
-            "v6 · hinge %.1f° · progress %.3f · handoff %.0f%% · %s · %s · %s",
+            "v8 · hinge %.1f° · p %.3f · handoff %.1f° · focus %.0f%% · %s · %s",
             angle,
             lastProgress,
-            handoff.coerceIn(0f, 1f) * 100f,
-            if (transitionView.isCoverSurface()) "cover" else "inner",
-            if (lastOpening) "opening" else "closing",
+            handoff * 180f,
+            focus * 100f,
+            surfaceLabel,
             lastSource,
         )
     }
 
     private fun updateSnapshotStatus() {
         if (!::snapshotStatusText.isInitialized) return
+        val coverReady = snapshotStore.hasSnapshot(SnapshotStore.Kind.COVER)
+        val innerReady = snapshotStore.hasSnapshot(SnapshotStore.Kind.INNER)
         snapshotStatusText.text = buildString {
             append("snapshots · cover ")
-            append(if (snapshotStore.hasSnapshot(SnapshotStore.Kind.COVER)) "imported" else "fallback")
+            append(if (coverReady) "imported" else "FALLBACK")
             append(" · inner ")
-            append(if (snapshotStore.hasSnapshot(SnapshotStore.Kind.INNER)) "imported" else "fallback")
+            append(if (innerReady) "imported" else "FALLBACK")
+            if (!coverReady || !innerReady) append(" · import both for meaningful preview")
         }
     }
 
@@ -329,7 +471,7 @@ class MainActivity : Activity() {
         modeButton.text = when {
             !hingeMonitor.isAvailable -> "Hinge sensor unavailable · manual mode"
             sensorMode -> "Sensor mode · tap for manual"
-            else -> "Manual mode · tap for hinge sensor"
+            else -> "Manual/preview mode · tap for hinge sensor"
         }
         modeButton.isEnabled = hingeMonitor.isAvailable
     }
@@ -338,5 +480,7 @@ class MainActivity : Activity() {
         private const val SEEK_MAX = 1000
         private const val REQUEST_COVER_SNAPSHOT = 3101
         private const val REQUEST_INNER_SNAPSHOT = 3102
+        private const val KEY_OPENING_HANDOFF = "opening_handoff_progress"
+        private const val KEY_CLOSING_HANDOFF = "closing_handoff_progress"
     }
 }
