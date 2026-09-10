@@ -43,6 +43,28 @@ class HingeSignalFilterTest {
     }
 
     @Test
+    fun thirtyDegreeHandMotion_keepsVisualLagUnderFiveDegrees() {
+        val filter = HingeSignalFilter()
+        filter.update(60f)
+        val output = filter.update(90f)
+        val lag = output.rawAngleDegrees - output.filteredAngleDegrees
+
+        assertTrue("visual lag was $lag degrees", lag in 0f..5f)
+    }
+
+    @Test
+    fun repeatedTenDegreeSteps_doNotAccumulateLargeLag() {
+        val filter = HingeSignalFilter()
+        var output = filter.update(40f)
+        listOf(50f, 60f, 70f, 80f, 90f, 100f).forEach {
+            output = filter.update(it)
+        }
+        val lag = output.rawAngleDegrees - output.filteredAngleDegrees
+
+        assertTrue("accumulated visual lag was $lag degrees", lag in 0f..5f)
+    }
+
+    @Test
     fun direction_usesRawMotionAndHonorsDeadband() {
         val filter = HingeSignalFilter()
         filter.update(80f)
