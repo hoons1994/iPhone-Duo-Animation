@@ -26,6 +26,22 @@ class TransitionTuningTest {
     }
 
     @Test
+    fun surfaceFocus_coverRisesIntoHandoff_andLatchesAfterIt() {
+        val h = 0.43f
+        assertEquals(0f, TransitionTuning.surfaceFocus(0f, h, coverSurface = true), 0.0001f)
+        assertEquals(1f, TransitionTuning.surfaceFocus(h, h, coverSurface = true), 0.0001f)
+        assertEquals(1f, TransitionTuning.surfaceFocus(h + 0.08f, h, coverSurface = true), 0.0001f)
+    }
+
+    @Test
+    fun surfaceFocus_innerStartsMasked_thenResolvesOpen() {
+        val h = 0.43f
+        assertEquals(1f, TransitionTuning.surfaceFocus(h, h, coverSurface = false), 0.0001f)
+        assertEquals(1f, TransitionTuning.surfaceFocus(h - 0.08f, h, coverSurface = false), 0.0001f)
+        assertEquals(0f, TransitionTuning.surfaceFocus(1f, h, coverSurface = false), 0.0001f)
+    }
+
+    @Test
     fun updateHandoff_movesTowardObservedWithoutJumping() {
         val updated = TransitionTuning.updateHandoff(0.43f, 0.50f)
         assertTrue(updated > 0.43f)
