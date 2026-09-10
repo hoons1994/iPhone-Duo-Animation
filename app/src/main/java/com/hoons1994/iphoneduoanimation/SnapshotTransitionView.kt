@@ -85,9 +85,11 @@ class SnapshotTransitionView(context: Context) : View(context) {
         if (w <= 0 || h <= 0) return
 
         runtimeShader.setFloatUniform("resolution", w.toFloat(), h.toFloat())
-        val shorter = minOf(w, h).toFloat()
-        val longer = maxOf(w, h).toFloat()
-        val newCoverSurface = (shorter / longer) < COVER_ASPECT_THRESHOLD
+
+        val classified = SurfaceClassifier.classify(w, h)
+        if (classified == SurfaceClassifier.Surface.UNKNOWN) return
+
+        val newCoverSurface = classified == SurfaceClassifier.Surface.COVER
         val changed = newCoverSurface != actualCoverSurface
         actualCoverSurface = newCoverSurface
         pushEffectiveSurface()
@@ -101,6 +103,7 @@ class SnapshotTransitionView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        if (width <= 0 || height <= 0) return
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
     }
 
@@ -134,9 +137,5 @@ class SnapshotTransitionView(context: Context) : View(context) {
 
     private fun onePixel(color: Int): Bitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888).apply {
         eraseColor(color)
-    }
-
-    companion object {
-        private const val COVER_ASPECT_THRESHOLD = 0.62f
     }
 }
