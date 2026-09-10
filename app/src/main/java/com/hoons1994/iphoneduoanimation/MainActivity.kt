@@ -8,6 +8,7 @@ import android.graphics.Color
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.view.animation.LinearInterpolator
 import android.widget.Button
@@ -28,6 +29,7 @@ class MainActivity : Activity() {
     private lateinit var coverBitmap: Bitmap
     private lateinit var innerBitmap: Bitmap
 
+    private lateinit var controlsPanel: LinearLayout
     private lateinit var progressSeekBar: SeekBar
     private lateinit var stateText: TextView
     private lateinit var snapshotStatusText: TextView
@@ -37,6 +39,7 @@ class MainActivity : Activity() {
 
     private var sensorMode = false
     private var userDragging = false
+    private var fullScreenPreview = false
     private var lastProgress = 0f
     private var lastOpening = true
     private var lastRawAngle = Float.NaN
@@ -62,6 +65,7 @@ class MainActivity : Activity() {
         lastOpening = savedInstanceState?.getBoolean(KEY_STATE_OPENING, true) ?: true
         lastRawAngle = savedInstanceState?.getFloat(KEY_STATE_RAW_ANGLE, Float.NaN) ?: Float.NaN
         lastFilteredAngle = savedInstanceState?.getFloat(KEY_STATE_FILTERED_ANGLE, Float.NaN) ?: Float.NaN
+        fullScreenPreview = savedInstanceState?.getBoolean(KEY_STATE_FULLSCREEN, false) ?: false
         val requestedSensorMode = savedInstanceState?.getBoolean(KEY_STATE_SENSOR_MODE, true) ?: true
 
         handoffCalibrator = HandoffCalibrator(
@@ -99,6 +103,7 @@ class MainActivity : Activity() {
 
         sensorMode = requestedSensorMode && hingeMonitor.isAvailable
         setContentView(buildUi())
+        applyControlsVisibility()
         updateModeButton()
         updateSnapshotStatus()
         presentationStatusText.text = "Displays · ${presentationController.describeDisplays()}"
@@ -123,6 +128,7 @@ class MainActivity : Activity() {
         outState.putFloat(KEY_STATE_RAW_ANGLE, lastRawAngle)
         outState.putFloat(KEY_STATE_FILTERED_ANGLE, lastFilteredAngle)
         outState.putBoolean(KEY_STATE_SENSOR_MODE, sensorMode)
+        outState.putBoolean(KEY_STATE_FULLSCREEN, fullScreenPreview)
         super.onSaveInstanceState(outState)
     }
 
@@ -161,6 +167,12 @@ class MainActivity : Activity() {
             onSurfaceChanged = { isCover ->
                 handlePhysicalSurfaceChange(isCover)
             }
+            setOnClickListener {
+                if (fullScreenPreview) {
+                    fullScreenPreview = false
+                    applyControlsVisibility()
+                }
+            }
         }
         root.addView(
             transitionView,
@@ -170,7 +182,7 @@ class MainActivity : Activity() {
             ),
         )
 
-        val controls = LinearLayout(this).apply {
+        controlsPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(
@@ -185,23 +197,23 @@ class MainActivity : Activity() {
         stateText = TextView(this).apply {
             setTextColor(Color.WHITE)
             textSize = 12f
-            text = "v9 adaptive handoff engine · waiting for surface"
+            text = "v10 adaptive handoff engine · waiting for surface"
             maxLines = 3
         }
-        controls.addView(stateText)
+        controlsPanel.addView(stateText)
 
         snapshotStatusText = TextView(this).apply {
             setTextColor(Color.LTGRAY)
             textSize = 12f
         }
-        controls.addView(snapshotStatusText)
+        controlsPanel.addView(snapshotStatusText)
 
         presentationStatusText = TextView(this).apply {
             setTextColor(Color.LTGRAY)
             textSize = 10f
             maxLines = 5
         }
-        controls.addView(presentationStatusText)
+        controlsPanel.addView(presentationStatusText)
 
         progressSeekBar = SeekBar(this).apply {
             max = SEEK_MAX
@@ -226,7 +238,7 @@ class MainActivity : Activity() {
                 }
             })
         }
-        controls.addView(
+        controlsPanel.addView(
             progressSeekBar,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -253,7 +265,7 @@ class MainActivity : Activity() {
             },
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
         )
-        controls.addView(importRow)
+        controlsPanel.addView(importRow)
 
         val previewRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -285,9 +297,9 @@ class MainActivity : Activity() {
             },
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
         )
-        controls.addView(previewRow)
+        controlsPanel.addView(previewRow)
 
-        controls.addView(
+        controlsPanel.addView(
             Button(this).apply {
                 isAllCaps = false
                 text = "Try 2-screen Presentation"
@@ -309,7 +321,7 @@ class MainActivity : Activity() {
                 updateModeButton()
             }
         }
-        controls.addView(
+        controlsPanel.addView(
             modeButton,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -317,8 +329,23 @@ class MainActivity : Activity() {
             ),
         )
 
+        controlsPanel.addView(
+            Button(this).apply {
+                isAllCaps = false
+                text = "Full-screen preview · tap image to exit"
+                setOnClickListener {
+                    fullScreenPreview = true
+                    applyControlsVisibility()
+                }
+            },
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+
         root.addView(
-            controls,
+            controlsPanel,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -328,6 +355,11 @@ class MainActivity : Activity() {
 
         updateStateText()
         return root
+    }
+
+    private fun applyControlsVisibility() {
+        if (!::controlsPanel.isInitialized) return
+        controlsPanel.visibility = if (fullScreenPreview) View.GONE else View.VISIBLE
     }
 
     private fun pickSnapshot(requestCode: Int) {
@@ -493,7 +525,7 @@ class MainActivity : Activity() {
 
         stateText.text = String.format(
             Locale.US,
-            "v9 · hinge raw %.1f° / filtered %.1f° · p %.3f\n" +
+            "v10 · hinge raw %.1f° / filtered %.1f° · p %.3f\n" +
                 "handoff %.1f° · focus %.0f%% · cal %.0f%% (n=%d) · %s · %s",
             rawAngle,
             filteredAngle,
@@ -542,5 +574,6 @@ class MainActivity : Activity() {
         private const val KEY_STATE_RAW_ANGLE = "state_raw_angle"
         private const val KEY_STATE_FILTERED_ANGLE = "state_filtered_angle"
         private const val KEY_STATE_SENSOR_MODE = "state_sensor_mode"
+        private const val KEY_STATE_FULLSCREEN = "state_fullscreen_preview"
     }
 }
