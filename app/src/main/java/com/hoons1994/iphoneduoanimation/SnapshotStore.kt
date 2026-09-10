@@ -37,7 +37,14 @@ class SnapshotStore(private val context: Context) {
 
     fun storedUri(kind: Kind): Uri? = prefs.getString(kind.key, null)?.let(Uri::parse)
 
-    fun hasSnapshot(kind: Kind): Boolean = storedUri(kind) != null
+    fun hasSnapshot(kind: Kind): Boolean {
+        val uri = storedUri(kind) ?: return false
+        return try {
+            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { true } ?: false
+        } catch (_: Exception) {
+            false
+        }
+    }
 
     fun load(kind: Kind): Bitmap? {
         val uri = storedUri(kind) ?: return null
@@ -57,6 +64,9 @@ class SnapshotStore(private val context: Context) {
                 decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
             }
         } catch (_: Exception) {
+            // Do not keep advertising an imported snapshot that the app can no
+            // longer decode/read after a reboot, provider change, or lost grant.
+            prefs.edit().remove(kind.key).apply()
             null
         }
     }
