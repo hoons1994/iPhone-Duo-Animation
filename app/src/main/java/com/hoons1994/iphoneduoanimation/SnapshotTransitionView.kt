@@ -86,7 +86,12 @@ class SnapshotTransitionView(context: Context) : View(context) {
 
         runtimeShader.setFloatUniform("resolution", w.toFloat(), h.toFloat())
 
-        val classified = SurfaceClassifier.classify(w, h)
+        val previousClassification = when {
+            !surfaceReported -> SurfaceClassifier.Surface.UNKNOWN
+            actualCoverSurface -> SurfaceClassifier.Surface.COVER
+            else -> SurfaceClassifier.Surface.INNER
+        }
+        val classified = SurfaceClassifier.classify(w, h, previousClassification)
         if (classified == SurfaceClassifier.Surface.UNKNOWN) return
 
         val newCoverSurface = classified == SurfaceClassifier.Surface.COVER
