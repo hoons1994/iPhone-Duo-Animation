@@ -30,6 +30,33 @@ class SurfaceClassifierTest {
     }
 
     @Test
+    fun transientMiddleRatio_keepsPreviousSurface() {
+        val width = 630
+        val height = 1000 // aspect ratio 0.63, inside the hysteresis dead band
+
+        assertEquals(
+            SurfaceClassifier.Surface.COVER,
+            SurfaceClassifier.classify(width, height, SurfaceClassifier.Surface.COVER),
+        )
+        assertEquals(
+            SurfaceClassifier.Surface.INNER,
+            SurfaceClassifier.classify(width, height, SurfaceClassifier.Surface.INNER),
+        )
+    }
+
+    @Test
+    fun strongRatioEvidence_overridesPreviousSurface() {
+        assertEquals(
+            SurfaceClassifier.Surface.INNER,
+            SurfaceClassifier.classify(800, 1000, SurfaceClassifier.Surface.COVER),
+        )
+        assertEquals(
+            SurfaceClassifier.Surface.COVER,
+            SurfaceClassifier.classify(450, 1000, SurfaceClassifier.Surface.INNER),
+        )
+    }
+
+    @Test
     fun invalidDimensions_areUnknown() {
         assertEquals(SurfaceClassifier.Surface.UNKNOWN, SurfaceClassifier.classify(0, 2400))
         assertEquals(SurfaceClassifier.Surface.UNKNOWN, SurfaceClassifier.classify(1080, 0))
