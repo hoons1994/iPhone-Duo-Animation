@@ -21,7 +21,10 @@ class SnapshotTransitionView(context: Context) : View(context) {
     private var innerBitmap: Bitmap = onePixel(Color.rgb(14, 18, 28))
     private var progress = 0f
     private var opening = true
-    private var coverSurface = false
+    private var actualCoverSurface = false
+    private var previewSurfaceOverride: Boolean? = null
+    private var surfaceReported = false
+    private var handoffProgress = TransitionTuning.DEFAULT_HANDOFF_PROGRESS
 
     var onSurfaceChanged: ((isCover: Boolean) -> Unit)? = null
 
@@ -31,10 +34,9 @@ class SnapshotTransitionView(context: Context) : View(context) {
         runtimeShader.setFloatUniform("progress", progress)
         runtimeShader.setFloatUniform("opening", 1f)
         runtimeShader.setFloatUniform("coverSurface", 0f)
-        // 22dp produced widely separated ghost samples on the Fold's dense
-        // panel. 10dp keeps the focus-loss cue while reading as blur instead
-        // of duplicated icons.
-        runtimeShader.setFloatUniform("maxBlurPx", 10f * resources.displayMetrics.density)
+        runtimeShader.setFloatUniform("handoffProgress", handoffProgress)
+        runtimeShader.setFloatUniform("focusWindow", TransitionTuning.FOCUS_HALF_WINDOW)
+        runtimeShader.setFloatUniform("maxBlurPx", 14f * resources.displayMetrics.density)
         bindSnapshots()
     }
 
@@ -46,16 +48,37 @@ class SnapshotTransitionView(context: Context) : View(context) {
     }
 
     fun updateProgress(value: Float, isOpening: Boolean) {
-        progress = value.coerceIn(0f, 1f)
+        progress = TransitionTuning.clampProgress(value)
         opening = isOpening
         runtimeShader.setFloatUniform("progress", progress)
         runtimeShader.setFloatUniform("opening", if (opening) 1f else 0f)
         invalidate()
     }
 
+    fun setHandoffProgress(value: Float) {
+        handoffProgress = value.coerceIn(
+            TransitionTuning.MIN_HANDOFF_PROGRESS,
+            TransitionTuning.MAX_HANDOFF_PROGRESS,
+        )
+        runtimeShader.setFloatUniform("handoffProgress", handoffProgress)
+        invalidate()
+    }
+
+    /**
+     * Used only by the automatic one-screen demo. null returns control to the
+     * actual physical surface classification from the current View dimensions.
+     */
+    fun setPreviewSurfaceOverride(isCover: Boolean?) {
+        previewSurfaceOverride = isCover
+        pushEffectiveSurface()
+        invalidate()
+    }
+
     fun currentProgress(): Float = progress
 
-    fun isCoverSurface(): Boolean = coverSurface
+    fun isCoverSurface(): Boolean = actualCoverSurface
+
+    fun effectiveCoverSurface(): Boolean = previewSurfaceOverride ?: actualCoverSurface
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
@@ -65,17 +88,27 @@ class SnapshotTransitionView(context: Context) : View(context) {
         val shorter = minOf(w, h).toFloat()
         val longer = maxOf(w, h).toFloat()
         val newCoverSurface = (shorter / longer) < COVER_ASPECT_THRESHOLD
-        if (newCoverSurface != coverSurface) {
-            coverSurface = newCoverSurface
-            onSurfaceChanged?.invoke(coverSurface)
+        val changed = newCoverSurface != actualCoverSurface
+        actualCoverSurface = newCoverSurface
+        pushEffectiveSurface()
+
+        if (!surfaceReported || changed) {
+            surfaceReported = true
+            onSurfaceChanged?.invoke(actualCoverSurface)
         }
-        runtimeShader.setFloatUniform("coverSurface", if (coverSurface) 1f else 0f)
         invalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
+    }
+
+    private fun pushEffectiveSurface() {
+        runtimeShader.setFloatUniform(
+            "coverSurface",
+            if (effectiveCoverSurface()) 1f else 0f,
+        )
     }
 
     private fun bindSnapshots() {
