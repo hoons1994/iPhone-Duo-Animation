@@ -3,9 +3,10 @@ package com.hoons1994.iphoneduoanimation
 /**
  * Progressive fold/unfold focus effect driven by physical hinge progress.
  *
- * This revision intentionally makes the effect more visible on-device so we
- * can calibrate it from real foldable testing before dialing it back toward
- * the final reference look.
+ * The active surface matters: the inner display should lose focus as the
+ * device closes, while the cover display should lose focus as the device
+ * opens. This gives the two surfaces complementary transition curves instead
+ * of a bell curve that barely changes around 90 degrees.
  */
 object DuoShader {
     const val SOURCE = """
@@ -13,6 +14,7 @@ object DuoShader {
         uniform float2 resolution;
         uniform float progress;
         uniform float opening;
+        uniform float coverSurface;
         uniform float maxBlurPx;
         uniform float scaleDip;
 
@@ -53,33 +55,31 @@ object DuoShader {
         half4 main(float2 p) {
             float t = clamp(progress, 0.0, 1.0);
 
-            // Broaden the middle of the curve so the effect is visible during
-            // a real hand-driven fold instead of only at exactly 90 degrees.
-            float rawPeak = max(sin(t * 3.14159265), 0.0);
-            float transitionPeak = pow(rawPeak, 0.68);
+            // Complementary monotonic curves:
+            // inner: open (180°) = sharp, closing = progressively blurred
+            // cover: closed (0°) = sharp, opening = progressively blurred
+            float transitionAmount = coverSurface > 0.5 ? t : (1.0 - t);
+
+            // Slight ease keeps the endpoint crisp while preserving a large
+            // visible range during hand-driven folding.
+            transitionAmount = pow(clamp(transitionAmount, 0.0, 1.0), 0.82);
 
             float halfWidth = max(resolution.x * 0.5, 1.0);
             float hingeDistance = abs(p.x - halfWidth) / halfWidth;
-
-            // Keep the progressive character, but retain 22% of the effect at
-            // the hinge for this diagnostic build so motion is unmistakable.
             float edgeProgress = smoothstep(0.02, 0.96, hingeDistance);
             float spatial = mix(0.22, 1.0, edgeProgress);
 
             float x01 = p.x / max(resolution.x, 1.0);
             float travel = opening > 0.5 ? x01 : (1.0 - x01);
             float directional = mix(0.88, 1.12, travel);
-            float radius = maxBlurPx * transitionPeak * spatial * directional;
+            float radius = maxBlurPx * transitionAmount * spatial * directional;
 
-            float scale = 1.0 - (scaleDip * transitionPeak);
+            float scale = 1.0 - (scaleDip * transitionAmount);
             float2 center = resolution * 0.5;
             float2 q = (p - center) / max(scale, 0.9) + center;
 
             half4 blurred = blur17(q, radius);
-
-            // Temporary, subtle focus-loss cue. This will be tuned down after
-            // we verify the fold path on real hardware.
-            float dim = 1.0 - (0.08 * transitionPeak * spatial);
+            float dim = 1.0 - (0.08 * transitionAmount * spatial);
             return half4(blurred.rgb * half(dim), blurred.a);
         }
     """
