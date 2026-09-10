@@ -30,13 +30,24 @@ class SnapshotTransitionView(context: Context) : View(context) {
 
     init {
         setLayerType(LAYER_TYPE_HARDWARE, null)
-        runtimeShader.setFloatUniform("resolution", 1080f, 2400f)
+
+        val metrics = resources.displayMetrics
+        val initialWidth = metrics.widthPixels.coerceAtLeast(1)
+        val initialHeight = metrics.heightPixels.coerceAtLeast(1)
+        actualCoverSurface = SurfaceClassifier.classify(initialWidth, initialHeight) ==
+            SurfaceClassifier.Surface.COVER
+
+        runtimeShader.setFloatUniform(
+            "resolution",
+            initialWidth.toFloat(),
+            initialHeight.toFloat(),
+        )
         runtimeShader.setFloatUniform("progress", progress)
         runtimeShader.setFloatUniform("opening", 1f)
-        runtimeShader.setFloatUniform("coverSurface", 0f)
+        runtimeShader.setFloatUniform("coverSurface", if (actualCoverSurface) 1f else 0f)
         runtimeShader.setFloatUniform("handoffProgress", handoffProgress)
         runtimeShader.setFloatUniform("focusWindow", TransitionTuning.FOCUS_HALF_WINDOW)
-        runtimeShader.setFloatUniform("maxBlurPx", 14f * resources.displayMetrics.density)
+        runtimeShader.setFloatUniform("maxBlurPx", 14f * metrics.density)
         bindSnapshots()
     }
 
@@ -87,7 +98,6 @@ class SnapshotTransitionView(context: Context) : View(context) {
         runtimeShader.setFloatUniform("resolution", w.toFloat(), h.toFloat())
 
         val previousClassification = when {
-            !surfaceReported -> SurfaceClassifier.Surface.UNKNOWN
             actualCoverSurface -> SurfaceClassifier.Surface.COVER
             else -> SurfaceClassifier.Surface.INNER
         }
