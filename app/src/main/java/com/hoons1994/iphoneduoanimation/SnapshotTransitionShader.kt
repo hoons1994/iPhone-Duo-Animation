@@ -50,13 +50,13 @@ object SnapshotTransitionShader {
             float t = clamp(progress, 0.0, 1.0);
             float h = clamp(handoffProgress, 0.2, 0.8);
 
-            // Cover contracts slightly as it approaches the physical switch.
-            // Inner starts slightly expanded at the switch and settles toward
-            // its endpoint. Reversing the hinge naturally reverses the motion.
+            // Both physical surfaces meet at the same subtle scale dip. This
+            // avoids hiding a geometry-size jump behind the handoff blur.
             float coverApproach = smoother(h - 0.24, h, t);
             float innerSettle = smoother(h, h + 0.24, t);
-            float coverScale = mix(1.0, 0.990, coverApproach);
-            float innerScale = mix(1.010, 1.0, innerSettle);
+            float handoffScale = 0.992;
+            float coverScale = mix(1.0, handoffScale, coverApproach);
+            float innerScale = mix(handoffScale, 1.0, innerSettle);
 
             float2 coverCoord = aspectFillCoord(p, coverSize, coverScale);
             float2 innerCoord = aspectFillCoord(p, innerSize, innerScale);
