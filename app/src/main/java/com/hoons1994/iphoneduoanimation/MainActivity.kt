@@ -14,9 +14,7 @@ import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import java.util.Locale
-import kotlin.math.PI
 import kotlin.math.pow
-import kotlin.math.sin
 
 class MainActivity : Activity() {
 
@@ -32,6 +30,8 @@ class MainActivity : Activity() {
     private var userDragging = false
     private var lastProgress = 0f
     private var lastOpening = true
+    private var coverSurface = false
+    private var lastSource = "startup"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,6 +40,7 @@ class MainActivity : Activity() {
         shader.setFloatUniform("resolution", 1080f, 2400f)
         shader.setFloatUniform("progress", 0f)
         shader.setFloatUniform("opening", 1f)
+        shader.setFloatUniform("coverSurface", 0f)
         shader.setFloatUniform("maxBlurPx", 28f * resources.displayMetrics.density)
         shader.setFloatUniform("scaleDip", 0.055f)
 
@@ -78,7 +79,14 @@ class MainActivity : Activity() {
             addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
                 if (width > 0 && height > 0) {
                     shader.setFloatUniform("resolution", width.toFloat(), height.toFloat())
+
+                    val shorter = minOf(width, height).toFloat()
+                    val longer = maxOf(width, height).toFloat()
+                    coverSurface = (shorter / longer) < COVER_ASPECT_THRESHOLD
+                    shader.setFloatUniform("coverSurface", if (coverSurface) 1f else 0f)
+
                     refreshRenderEffect(lastProgress)
+                    updateStateText()
                 }
             }
         }
@@ -105,7 +113,7 @@ class MainActivity : Activity() {
         stateText = TextView(this).apply {
             setTextColor(Color.WHITE)
             textSize = 14f
-            text = "progress 0.000 · fx 0%"
+            text = "progress 0.000 · fx -- · detecting surface"
         }
         controls.addView(
             stateText,
@@ -145,12 +153,12 @@ class MainActivity : Activity() {
 
         effectTestButton = Button(this).apply {
             isAllCaps = false
-            text = "Force 50% effect · diagnostic"
+            text = "Force hinge midpoint · diagnostic"
             setOnClickListener {
                 sensorMode = false
                 hingeMonitor.stop()
                 progressSeekBar.progress = SEEK_MAX / 2
-                applyProgress(0.5f, true, "forced midpoint")
+                applyProgress(0.5f, true, "forced 90°")
                 updateModeButton()
             }
         }
@@ -194,29 +202,19 @@ class MainActivity : Activity() {
         val clamped = progress.coerceIn(0f, 1f)
         lastProgress = clamped
         lastOpening = opening
+        lastSource = source
 
         shader.setFloatUniform("progress", clamped)
         shader.setFloatUniform("opening", if (opening) 1f else 0f)
+        shader.setFloatUniform("coverSurface", if (coverSurface) 1f else 0f)
         refreshRenderEffect(clamped)
-
-        val fxPeak = transitionPeak(clamped)
-        stateText.text = String.format(
-            Locale.US,
-            "progress %.3f  ·  fx %.0f%%  ·  %s  ·  %s",
-            clamped,
-            fxPeak * 100f,
-            if (opening) "opening" else "closing",
-            source,
-        )
+        updateStateText()
     }
 
     private fun refreshRenderEffect(progress: Float) {
-        // Recreate the RenderEffect so the RenderNode is explicitly dirtied on
-        // each hinge update. This is intentionally conservative for the device
-        // validation build; we can optimize allocations after visual proof.
         val shaderEffect = RenderEffect.createRuntimeShaderEffect(shader, "content")
-        val peak = transitionPeak(progress)
-        val globalBlur = 7f * resources.displayMetrics.density * peak
+        val amount = transitionAmount(progress)
+        val globalBlur = 10f * resources.displayMetrics.density * amount
 
         val effect = if (globalBlur > 0.5f) {
             RenderEffect.createBlurEffect(
@@ -233,9 +231,24 @@ class MainActivity : Activity() {
         demoView.invalidate()
     }
 
-    private fun transitionPeak(progress: Float): Float {
-        val raw = sin(progress.coerceIn(0f, 1f) * PI).toFloat().coerceAtLeast(0f)
-        return raw.pow(0.68f)
+    private fun transitionAmount(progress: Float): Float {
+        val t = progress.coerceIn(0f, 1f)
+        val linear = if (coverSurface) t else 1f - t
+        return linear.coerceIn(0f, 1f).pow(0.82f)
+    }
+
+    private fun updateStateText() {
+        if (!::stateText.isInitialized) return
+        val amount = transitionAmount(lastProgress)
+        stateText.text = String.format(
+            Locale.US,
+            "progress %.3f  ·  fx %.0f%%  ·  %s  ·  %s  ·  %s",
+            lastProgress,
+            amount * 100f,
+            if (coverSurface) "cover" else "inner",
+            if (lastOpening) "opening" else "closing",
+            lastSource,
+        )
     }
 
     private fun updateModeButton() {
@@ -251,5 +264,6 @@ class MainActivity : Activity() {
 
     companion object {
         private const val SEEK_MAX = 1000
+        private const val COVER_ASPECT_THRESHOLD = 0.62f
     }
 }
