@@ -84,7 +84,7 @@ object SnapshotTransitionShader {
             c += sampleSurface(p - float2(d, -d)) * 0.48;
             c += sampleSurface(p + float2(r2, 0.0)) * 0.30;
             c += sampleSurface(p - float2(r2, 0.0)) * 0.30;
-            return c / 12.98;
+            return c / 12.52;
         }
 
         half4 main(float2 p) {
