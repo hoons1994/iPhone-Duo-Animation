@@ -4,7 +4,6 @@ import android.app.Activity
 import android.graphics.Color
 import android.graphics.RenderEffect
 import android.graphics.RuntimeShader
-import android.graphics.Shader
 import android.os.Bundle
 import android.view.Gravity
 import android.view.ViewGroup
@@ -41,8 +40,8 @@ class MainActivity : Activity() {
         shader.setFloatUniform("progress", 0f)
         shader.setFloatUniform("opening", 1f)
         shader.setFloatUniform("coverSurface", 0f)
-        shader.setFloatUniform("maxBlurPx", 28f * resources.displayMetrics.density)
-        shader.setFloatUniform("scaleDip", 0.055f)
+        shader.setFloatUniform("maxBlurPx", 12f * resources.displayMetrics.density)
+        shader.setFloatUniform("scaleDip", 0.014f)
 
         hingeMonitor = HingeAngleMonitor(this) { angle, progress, opening ->
             if (!sensorMode || userDragging) return@HingeAngleMonitor
@@ -85,7 +84,7 @@ class MainActivity : Activity() {
                     coverSurface = (shorter / longer) < COVER_ASPECT_THRESHOLD
                     shader.setFloatUniform("coverSurface", if (coverSurface) 1f else 0f)
 
-                    refreshRenderEffect(lastProgress)
+                    refreshRenderEffect()
                     updateStateText()
                 }
             }
@@ -207,34 +206,22 @@ class MainActivity : Activity() {
         shader.setFloatUniform("progress", clamped)
         shader.setFloatUniform("opening", if (opening) 1f else 0f)
         shader.setFloatUniform("coverSurface", if (coverSurface) 1f else 0f)
-        refreshRenderEffect(clamped)
+        refreshRenderEffect()
         updateStateText()
     }
 
-    private fun refreshRenderEffect(progress: Float) {
-        val shaderEffect = RenderEffect.createRuntimeShaderEffect(shader, "content")
-        val amount = transitionAmount(progress)
-        val globalBlur = 10f * resources.displayMetrics.density * amount
-
-        val effect = if (globalBlur > 0.5f) {
-            RenderEffect.createBlurEffect(
-                globalBlur,
-                globalBlur,
-                shaderEffect,
-                Shader.TileMode.CLAMP,
-            )
-        } else {
-            shaderEffect
-        }
-
-        demoView.setRenderEffect(effect)
+    private fun refreshRenderEffect() {
+        // Recreate the shader effect to explicitly dirty the RenderNode on
+        // each hinge update. v4 intentionally has no chained global blur:
+        // all defocus now comes from the spatially varying AGSL shader.
+        demoView.setRenderEffect(RenderEffect.createRuntimeShaderEffect(shader, "content"))
         demoView.invalidate()
     }
 
     private fun transitionAmount(progress: Float): Float {
         val t = progress.coerceIn(0f, 1f)
         val linear = if (coverSurface) t else 1f - t
-        return linear.coerceIn(0f, 1f).pow(0.82f)
+        return linear.coerceIn(0f, 1f).pow(0.90f)
     }
 
     private fun updateStateText() {
