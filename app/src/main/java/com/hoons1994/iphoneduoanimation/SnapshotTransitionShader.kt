@@ -75,7 +75,7 @@ object SnapshotTransitionShader {
             c += sampleTransition(p - float2(d, -d)) * 0.75;
             c += sampleTransition(p + float2(r2, 0.0)) * 0.45;
             c += sampleTransition(p - float2(r2, 0.0)) * 0.45;
-            return c / 10.9;
+            return c / 11.9;
         }
 
         half4 main(float2 p) {
