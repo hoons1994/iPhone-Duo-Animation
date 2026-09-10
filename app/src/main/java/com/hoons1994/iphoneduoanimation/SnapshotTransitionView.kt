@@ -31,7 +31,10 @@ class SnapshotTransitionView(context: Context) : View(context) {
         runtimeShader.setFloatUniform("progress", progress)
         runtimeShader.setFloatUniform("opening", 1f)
         runtimeShader.setFloatUniform("coverSurface", 0f)
-        runtimeShader.setFloatUniform("maxBlurPx", 22f * resources.displayMetrics.density)
+        // 22dp produced widely separated ghost samples on the Fold's dense
+        // panel. 10dp keeps the focus-loss cue while reading as blur instead
+        // of duplicated icons.
+        runtimeShader.setFloatUniform("maxBlurPx", 10f * resources.displayMetrics.density)
         bindSnapshots()
     }
 
