@@ -105,12 +105,13 @@ class HingeSignalFilterTest {
     private fun runRamp(stepMillis: Long): Float {
         val filter = HingeSignalFilter()
         val base = 2_000_000_000L
+        val durationMillis = 128L
         filter.update(60f, base)
 
         var output = filter.update(60f, base)
         var elapsed = stepMillis
-        while (elapsed <= 120L) {
-            val fraction = elapsed / 120f
+        while (elapsed <= durationMillis) {
+            val fraction = elapsed / durationMillis.toFloat()
             val angle = 60f + 30f * fraction
             output = filter.update(angle, base + elapsed * 1_000_000L)
             elapsed += stepMillis
