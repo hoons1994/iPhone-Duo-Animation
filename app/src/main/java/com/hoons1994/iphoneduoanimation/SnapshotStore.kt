@@ -91,7 +91,12 @@ class SnapshotStore(private val context: Context) {
                 geometry != SnapshotGeometry.Assessment.INVALID
             prefs.edit().putBoolean(kind.validationKey, usable).apply()
 
-            if (usable) bitmap else null
+            if (usable) {
+                bitmap
+            } else {
+                bitmap.recycle()
+                null
+            }
         } catch (_: Exception) {
             // Do not keep advertising an imported snapshot that the app can no
             // longer decode/read after a reboot, provider change, or lost grant.
