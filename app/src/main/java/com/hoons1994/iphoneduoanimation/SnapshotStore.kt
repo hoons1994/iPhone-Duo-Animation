@@ -15,9 +15,21 @@ import kotlin.math.min
 
 class SnapshotStore(private val context: Context) {
 
-    enum class Kind(val key: String) {
-        COVER("cover_snapshot_uri"),
-        INNER("inner_snapshot_uri"),
+    enum class Kind(
+        val key: String,
+        val validationKey: String,
+        val geometryRole: SnapshotGeometry.Role,
+    ) {
+        COVER(
+            key = "cover_snapshot_uri",
+            validationKey = "cover_snapshot_geometry_valid",
+            geometryRole = SnapshotGeometry.Role.COVER,
+        ),
+        INNER(
+            key = "inner_snapshot_uri",
+            validationKey = "inner_snapshot_geometry_valid",
+            geometryRole = SnapshotGeometry.Role.INNER,
+        ),
     }
 
     private val prefs = context.getSharedPreferences("snapshot_store", Context.MODE_PRIVATE)
@@ -32,13 +44,19 @@ class SnapshotStore(private val context: Context) {
             // Some pickers grant access without a persistable permission. The
             // URI is still useful for the current session, so keep it stored.
         }
-        prefs.edit().putString(kind.key, uri.toString()).apply()
+        prefs.edit()
+            .putString(kind.key, uri.toString())
+            .remove(kind.validationKey)
+            .apply()
     }
 
     fun storedUri(kind: Kind): Uri? = prefs.getString(kind.key, null)?.let(Uri::parse)
 
     fun hasSnapshot(kind: Kind): Boolean {
         val uri = storedUri(kind) ?: return false
+        if (prefs.contains(kind.validationKey) && !prefs.getBoolean(kind.validationKey, true)) {
+            return false
+        }
         return try {
             context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { true } ?: false
         } catch (_: Exception) {
@@ -50,7 +68,7 @@ class SnapshotStore(private val context: Context) {
         val uri = storedUri(kind) ?: return null
         return try {
             val source = ImageDecoder.createSource(context.contentResolver, uri)
-            ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+            val bitmap = ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
                 val width = info.size.width
                 val height = info.size.height
                 val longest = maxOf(width, height)
@@ -63,10 +81,24 @@ class SnapshotStore(private val context: Context) {
                 }
                 decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
             }
+
+            val geometry = SnapshotGeometry.assess(
+                kind.geometryRole,
+                bitmap.width,
+                bitmap.height,
+            )
+            val usable = geometry != SnapshotGeometry.Assessment.LOOKS_SWAPPED &&
+                geometry != SnapshotGeometry.Assessment.INVALID
+            prefs.edit().putBoolean(kind.validationKey, usable).apply()
+
+            if (usable) bitmap else null
         } catch (_: Exception) {
             // Do not keep advertising an imported snapshot that the app can no
             // longer decode/read after a reboot, provider change, or lost grant.
-            prefs.edit().remove(kind.key).apply()
+            prefs.edit()
+                .remove(kind.key)
+                .remove(kind.validationKey)
+                .apply()
             null
         }
     }
