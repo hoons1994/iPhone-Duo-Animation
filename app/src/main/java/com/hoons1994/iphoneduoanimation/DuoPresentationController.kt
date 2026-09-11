@@ -65,7 +65,10 @@ class DuoPresentationController(private val activity: Activity) {
             (it.flags and Display.FLAG_PRESENTATION) != 0
         }
 
-        val candidates = (presentationCandidates + builtInPresentationCandidates)
+        // This experiment is specifically trying to reach the Fold's other
+        // internal panel. Prefer a presentation-capable built-in display before
+        // generic presentation targets such as a plugged-in monitor or cast sink.
+        val candidates = (builtInPresentationCandidates + presentationCandidates)
             .distinctBy { it.displayId }
 
         if (candidates.isEmpty()) {
