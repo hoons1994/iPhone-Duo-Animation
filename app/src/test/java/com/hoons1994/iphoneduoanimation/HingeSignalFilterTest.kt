@@ -1,5 +1,6 @@
 package com.hoons1994.iphoneduoanimation
 
+import kotlin.math.abs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -65,6 +66,26 @@ class HingeSignalFilterTest {
     }
 
     @Test
+    fun equivalentMotion_isStableAcrossSixtyAndOneTwentyHertz() {
+        val sixtyHz = runRamp(stepMillis = 16L)
+        val oneTwentyHz = runRamp(stepMillis = 8L)
+        val difference = abs(sixtyHz - oneTwentyHz)
+
+        assertTrue("sampling-rate response differed by $difference degrees", difference < 1.5f)
+    }
+
+    @Test
+    fun delayedSample_stillCapsVisualLag() {
+        val filter = HingeSignalFilter()
+        val base = 1_000_000_000L
+        filter.update(50f, base)
+        val output = filter.update(95f, base + 80_000_000L)
+        val lag = abs(output.rawAngleDegrees - output.filteredAngleDegrees)
+
+        assertTrue("visual lag was $lag degrees", lag <= 5.0001f)
+    }
+
+    @Test
     fun direction_usesRawMotionAndHonorsDeadband() {
         val filter = HingeSignalFilter()
         filter.update(80f)
@@ -79,5 +100,21 @@ class HingeSignalFilterTest {
         assertEquals(0f, filter.update(-10f).rawAngleDegrees, 0.0001f)
         filter.reset()
         assertEquals(180f, filter.update(220f).rawAngleDegrees, 0.0001f)
+    }
+
+    private fun runRamp(stepMillis: Long): Float {
+        val filter = HingeSignalFilter()
+        val base = 2_000_000_000L
+        filter.update(60f, base)
+
+        var output = filter.update(60f, base)
+        var elapsed = stepMillis
+        while (elapsed <= 120L) {
+            val fraction = elapsed / 120f
+            val angle = 60f + 30f * fraction
+            output = filter.update(angle, base + elapsed * 1_000_000L)
+            elapsed += stepMillis
+        }
+        return output.filteredAngleDegrees
     }
 }
