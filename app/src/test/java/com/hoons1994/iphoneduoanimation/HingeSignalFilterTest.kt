@@ -86,12 +86,34 @@ class HingeSignalFilterTest {
     }
 
     @Test
-    fun direction_usesRawMotionAndHonorsDeadband() {
+    fun direction_usesCumulativeRawMotionAndHonorsDeadband() {
         val filter = HingeSignalFilter()
         filter.update(80f)
         assertTrue(filter.update(82f).opening)
         assertTrue(filter.update(82.1f).opening)
         assertFalse(filter.update(80f).opening)
+    }
+
+    @Test
+    fun slowSubDeadbandSamples_eventuallyDetectDirectionReversal() {
+        val filter = HingeSignalFilter()
+        filter.update(80f)
+        assertFalse(filter.update(79f).opening)
+
+        assertFalse(filter.update(79.10f).opening)
+        assertFalse(filter.update(79.20f).opening)
+        assertTrue(filter.update(79.30f).opening)
+    }
+
+    @Test
+    fun tinyJitter_doesNotFlipEstablishedDirection() {
+        val filter = HingeSignalFilter()
+        filter.update(80f)
+        assertFalse(filter.update(79f).opening)
+
+        listOf(79.08f, 78.94f, 79.11f, 78.97f).forEach { angle ->
+            assertFalse(filter.update(angle).opening)
+        }
     }
 
     @Test
