@@ -24,6 +24,7 @@ class HingeSignalFilter {
 
     private var filteredAngle = Float.NaN
     private var previousRawAngle = Float.NaN
+    private var directionAnchorAngle = Float.NaN
     private var previousTimestampNanos = Long.MIN_VALUE
     private var opening = true
 
@@ -57,12 +58,7 @@ class HingeSignalFilter {
             filteredAngle = next.coerceIn(0f, 180f)
         }
 
-        if (!previousRawAngle.isNaN()) {
-            val delta = raw - previousRawAngle
-            if (abs(delta) >= DIRECTION_DEADBAND_DEGREES) {
-                opening = delta > 0f
-            }
-        }
+        updateDirection(raw)
         previousRawAngle = raw
         if (timestampNanos != Long.MIN_VALUE) {
             previousTimestampNanos = timestampNanos
@@ -79,8 +75,27 @@ class HingeSignalFilter {
     fun reset() {
         filteredAngle = Float.NaN
         previousRawAngle = Float.NaN
+        directionAnchorAngle = Float.NaN
         previousTimestampNanos = Long.MIN_VALUE
         opening = true
+    }
+
+    private fun updateDirection(raw: Float) {
+        if (directionAnchorAngle.isNaN()) {
+            directionAnchorAngle = raw
+            return
+        }
+
+        // Per-sample deadbands fail at high sensor rates: a slow 10 deg/s fold
+        // only moves ~0.08 degrees per 120 Hz sample and would never change
+        // direction. Accumulate displacement from an anchor so genuine slow
+        // reversals eventually cross the threshold while sub-threshold jitter
+        // still cannot flip the state.
+        val displacement = raw - directionAnchorAngle
+        if (abs(displacement) >= DIRECTION_DEADBAND_DEGREES) {
+            opening = displacement > 0f
+            directionAnchorAngle = raw
+        }
     }
 
     private fun elapsedSeconds(timestampNanos: Long): Float {
