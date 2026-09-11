@@ -23,7 +23,12 @@ class HingeAngleMonitor(
         if (registered) return
         val sensor = hingeSensor ?: return
         signalFilter.reset()
-        registered = sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME)
+        registered = sensorManager.registerListener(
+            this,
+            sensor,
+            SAMPLING_PERIOD_US,
+            MAX_REPORT_LATENCY_US,
+        )
     }
 
     fun stop() {
@@ -34,8 +39,15 @@ class HingeAngleMonitor(
 
     override fun onSensorChanged(event: SensorEvent) {
         if (event.sensor.type != Sensor.TYPE_HINGE_ANGLE || event.values.isEmpty()) return
-        onAngleChanged(signalFilter.update(event.values[0]))
+        onAngleChanged(signalFilter.update(event.values[0], event.timestamp))
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+
+    companion object {
+        // Ask for roughly 120 Hz with no batching. The sensor/driver may clamp this
+        // to its supported rate, but avoiding the generic GAME delay reduces visible lag.
+        private const val SAMPLING_PERIOD_US = 8_333
+        private const val MAX_REPORT_LATENCY_US = 0
+    }
 }
