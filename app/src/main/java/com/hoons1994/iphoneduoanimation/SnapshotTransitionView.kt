@@ -8,7 +8,9 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RuntimeShader
 import android.graphics.Shader
+import android.view.Surface
 import android.view.View
+import android.view.WindowManager
 
 class SnapshotTransitionView(context: Context) : View(context) {
 
@@ -31,9 +33,12 @@ class SnapshotTransitionView(context: Context) : View(context) {
     init {
         setLayerType(LAYER_TYPE_HARDWARE, null)
 
+        val initialBounds = runCatching {
+            context.getSystemService(WindowManager::class.java).currentWindowMetrics.bounds
+        }.getOrNull()
         val metrics = resources.displayMetrics
-        val initialWidth = metrics.widthPixels.coerceAtLeast(1)
-        val initialHeight = metrics.heightPixels.coerceAtLeast(1)
+        val initialWidth = (initialBounds?.width() ?: metrics.widthPixels).coerceAtLeast(1)
+        val initialHeight = (initialBounds?.height() ?: metrics.heightPixels).coerceAtLeast(1)
         actualCoverSurface = SurfaceClassifier.classify(initialWidth, initialHeight) ==
             SurfaceClassifier.Surface.COVER
 
@@ -48,7 +53,14 @@ class SnapshotTransitionView(context: Context) : View(context) {
         runtimeShader.setFloatUniform("handoffProgress", handoffProgress)
         runtimeShader.setFloatUniform("focusWindow", TransitionTuning.FOCUS_HALF_WINDOW)
         runtimeShader.setFloatUniform("maxBlurPx", 14f * metrics.density)
+        runtimeShader.setFloatUniform("hingeAxisY", 0f)
+        runtimeShader.setFloatUniform("coverHingeFromEnd", 0f)
         bindSnapshots()
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        updateHingeGeometry()
     }
 
     fun setSnapshots(cover: Bitmap, inner: Bitmap) {
@@ -96,6 +108,7 @@ class SnapshotTransitionView(context: Context) : View(context) {
         if (w <= 0 || h <= 0) return
 
         runtimeShader.setFloatUniform("resolution", w.toFloat(), h.toFloat())
+        updateHingeGeometry()
 
         val previousClassification = when {
             actualCoverSurface -> SurfaceClassifier.Surface.COVER
@@ -120,6 +133,22 @@ class SnapshotTransitionView(context: Context) : View(context) {
         super.onDraw(canvas)
         if (width <= 0 || height <= 0) return
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
+    }
+
+    private fun updateHingeGeometry() {
+        val rotation = display?.rotation ?: runCatching { context.display?.rotation }.getOrNull()
+            ?: Surface.ROTATION_0
+
+        val axisY = rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270
+
+        // Galaxy Fold book-style geometry has the cover hinge on the natural
+        // left edge. Rotating the device moves that edge to bottom/right/top.
+        // If a future device reports a different natural hinge edge this should
+        // become a device-profile setting rather than silently guessing.
+        val hingeFromEnd = rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_180
+
+        runtimeShader.setFloatUniform("hingeAxisY", if (axisY) 1f else 0f)
+        runtimeShader.setFloatUniform("coverHingeFromEnd", if (hingeFromEnd) 1f else 0f)
     }
 
     private fun pushEffectiveSurface() {
