@@ -50,7 +50,7 @@ class MainActivity : Activity() {
 
     private var latestRawProgress = Float.NaN
     private var latestSensorOpening = true
-    private var lastHingeSampleUptimeMs = Long.MIN_VALUE
+    private var lastHingeSampleElapsedMs = Long.MIN_VALUE
 
     private var physicalSurfaceInitialized = false
     private var lastPhysicalCover: Boolean? = null
@@ -64,8 +64,8 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
 
         if (savedInstanceState == null) {
-            val metrics = resources.displayMetrics
-            val startupSurface = SurfaceClassifier.classify(metrics.widthPixels, metrics.heightPixels)
+            val bounds = windowManager.currentWindowMetrics.bounds
+            val startupSurface = SurfaceClassifier.classify(bounds.width(), bounds.height())
             lastProgress = if (startupSurface == SurfaceClassifier.Surface.INNER) 1f else 0f
             lastOpening = startupSurface != SurfaceClassifier.Surface.COVER
             lastSource = when (startupSurface) {
@@ -107,7 +107,7 @@ class MainActivity : Activity() {
 
             // Keep the raw sample immediately available to surface-change calibration.
             // Rendering uses the filtered value below; calibration must not inherit filter lag.
-            lastHingeSampleUptimeMs = SystemClock.uptimeMillis()
+            lastHingeSampleElapsedMs = SystemClock.elapsedRealtime()
             lastRawAngle = sample.rawAngleDegrees
             lastFilteredAngle = sample.filteredAngleDegrees
             latestRawProgress = (sample.rawAngleDegrees / 180f).coerceIn(0f, 1f)
@@ -206,16 +206,27 @@ class MainActivity : Activity() {
             ),
         )
 
+        val horizontalPadding = (14f * density).toInt()
+        val topPadding = (10f * density).toInt()
+        val bottomPadding = (14f * density).toInt()
+
         controlsPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(
-                (14f * density).toInt(),
-                (10f * density).toInt(),
-                (14f * density).toInt(),
-                (14f * density).toInt(),
-            )
+            setPadding(horizontalPadding, topPadding, horizontalPadding, bottomPadding)
             setBackgroundColor(Color.argb(226, 10, 12, 18))
+            setOnApplyWindowInsetsListener { view, insets ->
+                val safeInsets = insets.getInsets(
+                    WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout(),
+                )
+                view.setPadding(
+                    horizontalPadding + safeInsets.left,
+                    topPadding,
+                    horizontalPadding + safeInsets.right,
+                    bottomPadding + safeInsets.bottom,
+                )
+                insets
+            }
         }
 
         stateText = TextView(this).apply {
@@ -376,6 +387,7 @@ class MainActivity : Activity() {
                 Gravity.BOTTOM,
             ),
         )
+        controlsPanel.requestApplyInsets()
 
         updateStateText()
         return root
@@ -385,6 +397,7 @@ class MainActivity : Activity() {
         if (!::controlsPanel.isInitialized) return
         controlsPanel.visibility = if (fullScreenPreview) View.GONE else View.VISIBLE
         applySystemBarsVisibility()
+        if (!fullScreenPreview) controlsPanel.requestApplyInsets()
     }
 
     private fun applySystemBarsVisibility() {
@@ -443,10 +456,10 @@ class MainActivity : Activity() {
         }
 
         if (previous != null && previous != isCover && sensorMode && autoAnimator == null) {
-            val sampleAge = if (lastHingeSampleUptimeMs == Long.MIN_VALUE) {
+            val sampleAge = if (lastHingeSampleElapsedMs == Long.MIN_VALUE) {
                 Long.MAX_VALUE
             } else {
-                SystemClock.uptimeMillis() - lastHingeSampleUptimeMs
+                SystemClock.elapsedRealtime() - lastHingeSampleElapsedMs
             }
 
             if (latestRawProgress.isNaN() || sampleAge !in 0..TransitionTuning.MAX_SURFACE_EVENT_AGE_MS) {
