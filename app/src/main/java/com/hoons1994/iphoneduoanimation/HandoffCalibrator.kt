@@ -10,10 +10,16 @@ import kotlin.math.min
  * Surface changes are noisy signals: configuration changes can happen late, and a single
  * misclassified resize must not permanently move the handoff point. Keep a short rolling
  * history, reject implausible jumps, and move the estimate toward the median observation.
+ * Recent samples and accepted counts can be restored so process restarts do not erase the
+ * outlier protection that was learned on the physical device.
  */
 class HandoffCalibrator(
     initialOpening: Float = TransitionTuning.DEFAULT_HANDOFF_PROGRESS,
     initialClosing: Float = TransitionTuning.DEFAULT_HANDOFF_PROGRESS,
+    initialOpeningHistory: List<Float> = emptyList(),
+    initialClosingHistory: List<Float> = emptyList(),
+    initialOpeningAcceptedCount: Int = 0,
+    initialClosingAcceptedCount: Int = 0,
 ) {
 
     enum class RejectReason {
@@ -30,20 +36,43 @@ class HandoffCalibrator(
         val rejectReason: RejectReason? = null,
     )
 
+    data class State(
+        val estimate: Float,
+        val recentSamples: List<Float>,
+        val acceptedCount: Int,
+    )
+
     private data class Channel(
         var estimate: Float,
         val history: ArrayDeque<Float> = ArrayDeque(),
         var acceptedCount: Int = 0,
     )
 
-    private val opening = Channel(clampEstimate(initialOpening))
-    private val closing = Channel(clampEstimate(initialClosing))
+    private val opening = restoredChannel(
+        estimate = initialOpening,
+        history = initialOpeningHistory,
+        acceptedCount = initialOpeningAcceptedCount,
+    )
+    private val closing = restoredChannel(
+        estimate = initialClosing,
+        history = initialClosingHistory,
+        acceptedCount = initialClosingAcceptedCount,
+    )
 
     fun estimate(isOpening: Boolean): Float = channel(isOpening).estimate
 
     fun sampleCount(isOpening: Boolean): Int = channel(isOpening).acceptedCount
 
     fun confidence(isOpening: Boolean): Float = confidence(channel(isOpening))
+
+    fun state(isOpening: Boolean): State {
+        val source = channel(isOpening)
+        return State(
+            estimate = source.estimate,
+            recentSamples = source.history.toList(),
+            acceptedCount = source.acceptedCount,
+        )
+    }
 
     fun observe(
         isOpening: Boolean,
@@ -100,6 +129,22 @@ class HandoffCalibrator(
         )
 
     private fun channel(isOpening: Boolean): Channel = if (isOpening) opening else closing
+
+    private fun restoredChannel(
+        estimate: Float,
+        history: List<Float>,
+        acceptedCount: Int,
+    ): Channel {
+        val validHistory = history
+            .filter { it in TransitionTuning.MIN_HANDOFF_PROGRESS..TransitionTuning.MAX_HANDOFF_PROGRESS }
+            .takeLast(TransitionTuning.CALIBRATION_HISTORY_LIMIT)
+
+        return Channel(
+            estimate = clampEstimate(estimate),
+            history = ArrayDeque(validHistory),
+            acceptedCount = maxOf(acceptedCount, validHistory.size, 0),
+        )
+    }
 
     private fun clampEstimate(value: Float): Float = value.coerceIn(
         TransitionTuning.MIN_HANDOFF_PROGRESS,
