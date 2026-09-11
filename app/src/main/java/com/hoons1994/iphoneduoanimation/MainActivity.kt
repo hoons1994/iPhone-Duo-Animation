@@ -10,6 +10,8 @@ import android.os.SystemClock
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.view.animation.LinearInterpolator
 import android.widget.Button
 import android.widget.FrameLayout
@@ -61,11 +63,23 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        lastProgress = savedInstanceState?.getFloat(KEY_STATE_PROGRESS, 0f) ?: 0f
-        lastOpening = savedInstanceState?.getBoolean(KEY_STATE_OPENING, true) ?: true
-        lastRawAngle = savedInstanceState?.getFloat(KEY_STATE_RAW_ANGLE, Float.NaN) ?: Float.NaN
-        lastFilteredAngle = savedInstanceState?.getFloat(KEY_STATE_FILTERED_ANGLE, Float.NaN) ?: Float.NaN
-        fullScreenPreview = savedInstanceState?.getBoolean(KEY_STATE_FULLSCREEN, false) ?: false
+        if (savedInstanceState == null) {
+            val metrics = resources.displayMetrics
+            val startupSurface = SurfaceClassifier.classify(metrics.widthPixels, metrics.heightPixels)
+            lastProgress = if (startupSurface == SurfaceClassifier.Surface.INNER) 1f else 0f
+            lastOpening = startupSurface != SurfaceClassifier.Surface.COVER
+            lastSource = when (startupSurface) {
+                SurfaceClassifier.Surface.COVER -> "startup cover seed"
+                SurfaceClassifier.Surface.INNER -> "startup inner seed"
+                SurfaceClassifier.Surface.UNKNOWN -> "startup"
+            }
+        } else {
+            lastProgress = savedInstanceState.getFloat(KEY_STATE_PROGRESS, 0f)
+            lastOpening = savedInstanceState.getBoolean(KEY_STATE_OPENING, true)
+            lastRawAngle = savedInstanceState.getFloat(KEY_STATE_RAW_ANGLE, Float.NaN)
+            lastFilteredAngle = savedInstanceState.getFloat(KEY_STATE_FILTERED_ANGLE, Float.NaN)
+            fullScreenPreview = savedInstanceState.getBoolean(KEY_STATE_FULLSCREEN, false)
+        }
         val requestedSensorMode = savedInstanceState?.getBoolean(KEY_STATE_SENSOR_MODE, true) ?: true
 
         handoffCalibrator = HandoffCalibrator(
@@ -77,6 +91,10 @@ class MainActivity : Activity() {
                 KEY_CLOSING_HANDOFF,
                 TransitionTuning.DEFAULT_HANDOFF_PROGRESS,
             ),
+            initialOpeningHistory = readCalibrationHistory(KEY_OPENING_HISTORY),
+            initialClosingHistory = readCalibrationHistory(KEY_CLOSING_HISTORY),
+            initialOpeningAcceptedCount = tuningPrefs.getInt(KEY_OPENING_COUNT, 0),
+            initialClosingAcceptedCount = tuningPrefs.getInt(KEY_CLOSING_COUNT, 0),
         )
 
         snapshotStore = SnapshotStore(this)
@@ -115,11 +133,17 @@ class MainActivity : Activity() {
         if (::presentationStatusText.isInitialized) {
             presentationStatusText.text = "Displays · ${presentationController.describeDisplays()}"
         }
+        applySystemBarsVisibility()
     }
 
     override fun onPause() {
         hingeMonitor.stop()
         super.onPause()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) applySystemBarsVisibility()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -197,7 +221,7 @@ class MainActivity : Activity() {
         stateText = TextView(this).apply {
             setTextColor(Color.WHITE)
             textSize = 12f
-            text = "v10 adaptive handoff engine · waiting for surface"
+            text = "v11 adaptive handoff engine · waiting for surface"
             maxLines = 3
         }
         controlsPanel.addView(stateText)
@@ -360,6 +384,18 @@ class MainActivity : Activity() {
     private fun applyControlsVisibility() {
         if (!::controlsPanel.isInitialized) return
         controlsPanel.visibility = if (fullScreenPreview) View.GONE else View.VISIBLE
+        applySystemBarsVisibility()
+    }
+
+    private fun applySystemBarsVisibility() {
+        val controller = window.insetsController ?: return
+        if (fullScreenPreview) {
+            controller.systemBarsBehavior =
+                WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsets.Type.systemBars())
+        } else {
+            controller.show(WindowInsets.Type.systemBars())
+        }
     }
 
     private fun pickSnapshot(requestCode: Int) {
@@ -503,11 +539,28 @@ class MainActivity : Activity() {
     private fun currentHandoff(opening: Boolean): Float = handoffCalibrator.estimate(opening)
 
     private fun persistHandoffCalibration() {
+        val openingState = handoffCalibrator.state(true)
+        val closingState = handoffCalibrator.state(false)
         tuningPrefs.edit()
-            .putFloat(KEY_OPENING_HANDOFF, handoffCalibrator.estimate(true))
-            .putFloat(KEY_CLOSING_HANDOFF, handoffCalibrator.estimate(false))
+            .putFloat(KEY_OPENING_HANDOFF, openingState.estimate)
+            .putFloat(KEY_CLOSING_HANDOFF, closingState.estimate)
+            .putString(KEY_OPENING_HISTORY, encodeCalibrationHistory(openingState.recentSamples))
+            .putString(KEY_CLOSING_HISTORY, encodeCalibrationHistory(closingState.recentSamples))
+            .putInt(KEY_OPENING_COUNT, openingState.acceptedCount)
+            .putInt(KEY_CLOSING_COUNT, closingState.acceptedCount)
             .apply()
     }
+
+    private fun readCalibrationHistory(key: String): List<Float> =
+        tuningPrefs.getString(key, null)
+            ?.split(',')
+            ?.mapNotNull { it.toFloatOrNull() }
+            ?.filter { it in TransitionTuning.MIN_HANDOFF_PROGRESS..TransitionTuning.MAX_HANDOFF_PROGRESS }
+            ?.takeLast(TransitionTuning.CALIBRATION_HISTORY_LIMIT)
+            .orEmpty()
+
+    private fun encodeCalibrationHistory(values: List<Float>): String =
+        values.joinToString(separator = ",") { String.format(Locale.US, "%.6f", it) }
 
     private fun updateStateText() {
         if (!::stateText.isInitialized || !::transitionView.isInitialized) return
@@ -520,18 +573,21 @@ class MainActivity : Activity() {
         val rendered = if (renderedCover) "cover" else "inner"
         val surfaceLabel = if (physical == rendered) physical else "$physical→$rendered preview"
         val focus = TransitionTuning.surfaceFocus(lastProgress, handoff, renderedCover)
+        val bridge = TransitionTuning.sourceBlend(lastProgress, handoff, renderedCover)
         val confidence = handoffCalibrator.confidence(lastOpening)
         val samples = handoffCalibrator.sampleCount(lastOpening)
 
         stateText.text = String.format(
             Locale.US,
-            "v10 · hinge raw %.1f° / filtered %.1f° · p %.3f\n" +
-                "handoff %.1f° · focus %.0f%% · cal %.0f%% (n=%d) · %s · %s",
+            "v11 · hinge raw %.1f° / filtered %.1f° · p %.3f\n" +
+                "handoff %.1f° · focus %.0f%% · bridge %.0f%% · cal %.0f%% (n=%d)\n" +
+                "%s · %s",
             rawAngle,
             filteredAngle,
             lastProgress,
             handoff * 180f,
             focus * 100f,
+            bridge * 100f,
             confidence * 100f,
             samples,
             surfaceLabel,
@@ -568,6 +624,10 @@ class MainActivity : Activity() {
 
         private const val KEY_OPENING_HANDOFF = "opening_handoff_progress"
         private const val KEY_CLOSING_HANDOFF = "closing_handoff_progress"
+        private const val KEY_OPENING_HISTORY = "opening_handoff_history"
+        private const val KEY_CLOSING_HISTORY = "closing_handoff_history"
+        private const val KEY_OPENING_COUNT = "opening_handoff_count"
+        private const val KEY_CLOSING_COUNT = "closing_handoff_count"
 
         private const val KEY_STATE_PROGRESS = "state_progress"
         private const val KEY_STATE_OPENING = "state_opening"
