@@ -57,28 +57,42 @@ object SnapshotTransitionShader {
             return uv * imageSize;
         }
 
+        float coverScaleAt(float t, float h) {
+            float coverApproach = smoother(h - 0.24, h, t);
+            return mix(1.0, 0.992, coverApproach);
+        }
+
+        float innerScaleAt(float t, float h) {
+            float innerSettle = smoother(h, h + 0.24, t);
+            return mix(0.992, 1.0, innerSettle);
+        }
+
+        half4 sampleCover(float2 p, float t, float h) {
+            float2 coord = aspectFillCoord(p, coverSize, coverScaleAt(t, h));
+            return coverSnapshot.eval(coord);
+        }
+
+        half4 sampleInner(float2 p, float t, float h) {
+            float2 coord = aspectFillCoord(p, innerSize, innerScaleAt(t, h));
+            return innerSnapshot.eval(coord);
+        }
+
         half4 sampleSurface(float2 p) {
             float t = clamp(progress, 0.0, 1.0);
             float h = clamp(handoffProgress, 0.2, 0.8);
-
-            // Both physical surfaces meet at the same subtle scale dip. This
-            // avoids hiding a geometry-size jump behind the handoff blur.
-            float coverApproach = smoother(h - 0.24, h, t);
-            float innerSettle = smoother(h, h + 0.24, t);
-            float handoffScale = 0.992;
-            float coverScale = mix(1.0, handoffScale, coverApproach);
-            float innerScale = mix(handoffScale, 1.0, innerSettle);
-
-            float2 coverCoord = aspectFillCoord(p, coverSize, coverScale);
-            float2 innerCoord = aspectFillCoord(p, innerSize, innerScale);
-            half4 coverColor = coverSnapshot.eval(coverCoord);
-            half4 innerColor = innerSnapshot.eval(innerCoord);
-
-            // Around the learned switch both physical displays latch to the
-            // exact same 50/50 source mixture while heavily blurred. This keeps
-            // average color and large shapes continuous without a long ghosted
-            // cross-fade once the handoff is complete.
             float bridge = sourceBridge(t, h);
+
+            // Keep normal use cheap: outside the short bridge, read only the
+            // snapshot that can actually contribute to the output pixel.
+            if (bridge <= 0.001) {
+                return sampleCover(p, t, h);
+            }
+            if (bridge >= 0.999) {
+                return sampleInner(p, t, h);
+            }
+
+            half4 coverColor = sampleCover(p, t, h);
+            half4 innerColor = sampleInner(p, t, h);
             return mix(coverColor, innerColor, half(bridge));
         }
 
