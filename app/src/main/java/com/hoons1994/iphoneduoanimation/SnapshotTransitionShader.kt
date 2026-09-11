@@ -5,7 +5,8 @@ package com.hoons1994.iphoneduoanimation
  *
  * The active physical display owns one snapshot at a time. One UI performs the
  * real cover/inner display handoff; this shader hides that switch with a focus
- * peak and complementary geometry on the outgoing/incoming surfaces.
+ * peak, a short see-through source bridge, and complementary geometry on the
+ * outgoing/incoming surfaces.
  */
 object SnapshotTransitionShader {
     const val SOURCE = """
@@ -24,6 +25,14 @@ object SnapshotTransitionShader {
         float smoother(float edge0, float edge1, float x) {
             float t = clamp((x - edge0) / max(edge1 - edge0, 0.0001), 0.0, 1.0);
             return t * t * (3.0 - 2.0 * t);
+        }
+
+        float sourceBridge(float t, float h) {
+            float bridgeWindow = 0.10;
+            float latch = 0.035;
+            float coverBlend = 0.5 * smoother(h - bridgeWindow, h - latch, t);
+            float innerBlend = 0.5 + 0.5 * smoother(h + latch, h + bridgeWindow, t);
+            return coverSurface > 0.5 ? coverBlend : innerBlend;
         }
 
         float2 aspectFillCoord(float2 p, float2 imageSize, float scale) {
@@ -60,10 +69,15 @@ object SnapshotTransitionShader {
 
             float2 coverCoord = aspectFillCoord(p, coverSize, coverScale);
             float2 innerCoord = aspectFillCoord(p, innerSize, innerScale);
+            half4 coverColor = coverSnapshot.eval(coverCoord);
+            half4 innerColor = innerSnapshot.eval(innerCoord);
 
-            return coverSurface > 0.5
-                ? coverSnapshot.eval(coverCoord)
-                : innerSnapshot.eval(innerCoord);
+            // Around the learned switch both physical displays latch to the
+            // exact same 50/50 source mixture while heavily blurred. This keeps
+            // average color and large shapes continuous without a long ghosted
+            // cross-fade once the handoff is complete.
+            float bridge = sourceBridge(t, h);
+            return mix(coverColor, innerColor, half(bridge));
         }
 
         half4 blur9(float2 p, float radius) {
@@ -103,14 +117,17 @@ object SnapshotTransitionShader {
             float focus = coverSurface > 0.5 ? coverFocus : innerFocus;
 
             // Cover hinge is the long inner edge; inner display hinge is the
-            // vertical center line. Keep the hinge region relatively sharp and
-            // increase blur toward the physical outer edge(s).
+            // vertical center line. Blend the spatial field with the same source
+            // bridge so the blur pattern itself does not jump at the display switch.
             float innerHingeDistance = abs(p.x - resolution.x * 0.5) /
                 max(resolution.x * 0.5, 1.0);
             float coverHingeDistance = p.x / max(resolution.x, 1.0);
-            float hingeDistance = coverSurface > 0.5
-                ? clamp(coverHingeDistance, 0.0, 1.0)
-                : clamp(innerHingeDistance, 0.0, 1.0);
+            float bridge = sourceBridge(t, h);
+            float hingeDistance = mix(
+                clamp(coverHingeDistance, 0.0, 1.0),
+                clamp(innerHingeDistance, 0.0, 1.0),
+                bridge
+            );
 
             float spatial = pow(smoother(0.04, 0.98, hingeDistance), 0.76);
             spatial = mix(0.08, 1.0, spatial);
