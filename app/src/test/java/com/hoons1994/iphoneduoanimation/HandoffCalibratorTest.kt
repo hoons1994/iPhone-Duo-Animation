@@ -79,6 +79,38 @@ class HandoffCalibratorTest {
     }
 
     @Test
+    fun restoredHistory_keepsConfidenceAndOutlierProtection() {
+        val history = listOf(0.438f, 0.441f, 0.439f, 0.440f)
+        val calibrator = HandoffCalibrator(
+            initialOpening = 0.440f,
+            initialOpeningHistory = history,
+            initialOpeningAcceptedCount = 11,
+        )
+
+        assertEquals(11, calibrator.sampleCount(true))
+        assertTrue(calibrator.confidence(true) > 0.95f)
+        assertEquals(history, calibrator.state(true).recentSamples)
+
+        val outlier = calibrator.observe(true, true, false, 0.60f)
+        assertFalse(outlier.accepted)
+        assertEquals(HandoffCalibrator.RejectReason.OUTLIER, outlier.rejectReason)
+        assertEquals(11, calibrator.sampleCount(true))
+    }
+
+    @Test
+    fun restoredState_discardsInvalidHistoryAndKeepsAcceptedCountMonotonic() {
+        val calibrator = HandoffCalibrator(
+            initialClosing = 0.46f,
+            initialClosingHistory = listOf(0.47f, 0.9f, -1f, 0.48f),
+            initialClosingAcceptedCount = 1,
+        )
+
+        val state = calibrator.state(false)
+        assertEquals(listOf(0.47f, 0.48f), state.recentSamples)
+        assertEquals(2, state.acceptedCount)
+    }
+
+    @Test
     fun observationOutsidePhysicalRange_isRejected() {
         val calibrator = HandoffCalibrator()
         val result = calibrator.observe(true, true, false, 0.90f)
