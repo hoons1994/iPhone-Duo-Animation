@@ -21,6 +21,8 @@ object SnapshotTransitionShader {
         uniform float handoffProgress;
         uniform float focusWindow;
         uniform float maxBlurPx;
+        uniform float hingeAxisY;
+        uniform float coverHingeFromEnd;
 
         float smoother(float edge0, float edge1, float x) {
             float t = clamp((x - edge0) / max(edge1 - edge0, 0.0001), 0.0, 1.0);
@@ -116,12 +118,18 @@ object SnapshotTransitionShader {
             float innerFocus = 1.0 - smoother(h, h + window, t);
             float focus = coverSurface > 0.5 ? coverFocus : innerFocus;
 
-            // Cover hinge is the long inner edge; inner display hinge is the
-            // vertical center line. Blend the spatial field with the same source
-            // bridge so the blur pattern itself does not jump at the display switch.
-            float innerHingeDistance = abs(p.x - resolution.x * 0.5) /
-                max(resolution.x * 0.5, 1.0);
-            float coverHingeDistance = p.x / max(resolution.x, 1.0);
+            // Track screen rotation explicitly. The inner hinge sits at the
+            // center line; the cover hinge sits at one physical edge. Without
+            // this, rotating the Fold 90/180 degrees puts the strongest blur on
+            // the wrong axis/edge and immediately breaks the depth illusion.
+            float crossPosition = hingeAxisY > 0.5 ? p.y : p.x;
+            float crossSize = hingeAxisY > 0.5 ? resolution.y : resolution.x;
+            float normalizedCross = clamp(crossPosition / max(crossSize, 1.0), 0.0, 1.0);
+
+            float innerHingeDistance = abs(normalizedCross - 0.5) * 2.0;
+            float coverHingeDistance = coverHingeFromEnd > 0.5
+                ? (1.0 - normalizedCross)
+                : normalizedCross;
             float bridge = sourceBridge(t, h);
             float hingeDistance = mix(
                 clamp(coverHingeDistance, 0.0, 1.0),
@@ -132,8 +140,10 @@ object SnapshotTransitionShader {
             float spatial = pow(smoother(0.04, 0.98, hingeDistance), 0.76);
             spatial = mix(0.08, 1.0, spatial);
 
-            float x01 = p.x / max(resolution.x, 1.0);
-            float travel = opening > 0.5 ? x01 : (1.0 - x01);
+            float travelPosition = hingeAxisY > 0.5
+                ? (p.y / max(resolution.y, 1.0))
+                : (p.x / max(resolution.x, 1.0));
+            float travel = opening > 0.5 ? travelPosition : (1.0 - travelPosition);
             float directional = mix(0.98, 1.02, travel);
 
             float radius = maxBlurPx * focus * spatial * directional;
