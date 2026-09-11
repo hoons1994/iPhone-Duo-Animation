@@ -11,7 +11,11 @@ object TransitionTuning {
     const val CALIBRATION_ALPHA = 0.30f
     const val CALIBRATION_OUTLIER_THRESHOLD = 0.075f
     const val CALIBRATION_HISTORY_LIMIT = 7
-    const val MAX_SURFACE_EVENT_AGE_MS = 400L
+
+    // Hinge delivery is requested unbatched at ~120 Hz. If the main thread has
+    // not seen a hinge update for more than this, skipping one calibration
+    // sample is safer than permanently learning an angle from a stale value.
+    const val MAX_SURFACE_EVENT_AGE_MS = 120L
 
     // Roughly 32 degrees on either side of the learned handoff. The shader
     // latches at full focus-loss if the old physical display persists past
