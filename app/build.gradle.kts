@@ -5,16 +5,14 @@ plugins {
 android {
     namespace = "com.hoons1994.iphoneduoanimation"
     compileSdk = 37
-
     defaultConfig {
         applicationId = "com.hoons1994.iphoneduoanimation"
         minSdk = 33
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 12
+        versionName = "0.12.0-projection"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
-
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
