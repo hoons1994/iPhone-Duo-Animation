@@ -14,9 +14,13 @@ import android.hardware.HardwareBuffer
 import android.media.ImageReader
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
+import android.widget.Button
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import org.junit.Assert.*
 import org.junit.Test
@@ -97,24 +101,72 @@ class RuntimeShaderSmokeTest {
         println("PROJECTION_PIXELS fixedDifferences=$fixedDifferences movingDifferences=$movingDifferences")
     }
 
-    @Test fun activityStartsWithVisibleManualProjection() {
+    @Test fun activityStartsWithVisibleManualProjectionAndAutoDemoMoves() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val activity = instrumentation.startActivitySync(Intent(instrumentation.targetContext, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         try {
             instrumentation.waitForIdleSync()
+            lateinit var view: SnapshotTransitionView
             instrumentation.runOnMainSync {
-                fun find(view: View): SnapshotTransitionView? {
-                    if (view is SnapshotTransitionView) return view
-                    if (view is ViewGroup) for (i in 0 until view.childCount) find(view.getChildAt(i))?.let { return it }
-                    return null
-                }
-                val view = requireNotNull(find(activity.window.decorView))
+                view = requireNotNull(findView(activity.window.decorView) { it is SnapshotTransitionView }) as SnapshotTransitionView
                 assertNull("renderer startup failed", view.rendererError)
                 assertEquals(120f / 180f, view.currentProgress(), 0.001f)
                 assertFalse(view.effectiveCoverSurface())
             }
+            awaitFrame(view)
+            instrumentation.runOnMainSync { assertEquals(60f, view.renderedTiltDegrees, 0.01f) }
+            instrumentation.uiAutomation.takeScreenshot()?.let { save(it, "activity-manual-120.png") }
+
+            fun click(label: String) {
+                instrumentation.runOnMainSync {
+                    val button = requireNotNull(findView(activity.window.decorView) { it is Button && it.text.toString() == label })
+                    assertTrue("button did not click: $label", button.performClick())
+                }
+                awaitFrame(view)
+            }
+            click("180°")
+            instrumentation.runOnMainSync { assertEquals(0f, view.renderedTiltDegrees, 0.01f) }
+            click("120°")
+            click("효과: 켜짐")
+            instrumentation.runOnMainSync { assertEquals(0f, view.renderedTiltDegrees, 0.01f) }
+            click("효과: 원본")
+            instrumentation.runOnMainSync { assertEquals(60f, view.renderedTiltDegrees, 0.01f) }
+
+            click("180°")
+            val advanced = CountDownLatch(1)
+            lateinit var listener: ViewTreeObserver.OnDrawListener
+            instrumentation.runOnMainSync {
+                listener = ViewTreeObserver.OnDrawListener {
+                    if (view.currentProgress() < 0.90f && view.currentProgress() > 0.50f) advanced.countDown()
+                }
+                view.viewTreeObserver.addOnDrawListener(listener)
+            }
+            try {
+                click("자동 시연")
+                assertTrue("automatic demo did not advance across frames", advanced.await(10, TimeUnit.SECONDS))
+                instrumentation.uiAutomation.takeScreenshot()?.let { save(it, "activity-auto.png") }
+            } finally {
+                instrumentation.runOnMainSync { view.viewTreeObserver.removeOnDrawListener(listener) }
+            }
         } finally { instrumentation.runOnMainSync { activity.finish() } }
+    }
+
+    private fun findView(view: View, predicate: (View) -> Boolean): View? {
+        if (predicate(view)) return view
+        if (view is ViewGroup) for (i in 0 until view.childCount) {
+            findView(view.getChildAt(i), predicate)?.let { return it }
+        }
+        return null
+    }
+
+    private fun awaitFrame(view: View) {
+        val committed = CountDownLatch(1)
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            view.viewTreeObserver.registerFrameCommitCallback { committed.countDown() }
+            view.invalidate()
+        }
+        assertTrue("Activity did not commit a hardware frame", committed.await(10, TimeUnit.SECONDS))
     }
 
     private fun gradient() = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).apply {
@@ -170,7 +222,11 @@ class RuntimeShaderSmokeTest {
     }
 
     private fun save(bitmap: Bitmap, name: String) {
-        val dir = File(InstrumentationRegistry.getInstrumentation().targetContext.filesDir, "projection-frames")
+        // AGP collects this directory before uninstalling the tested app. The
+        // old internal-only path disappeared during normal test cleanup.
+        val output = InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")
+        val base = output?.let(::File) ?: InstrumentationRegistry.getInstrumentation().targetContext.filesDir
+        val dir = File(base, "projection-frames")
         check(dir.isDirectory || dir.mkdirs())
         File(dir, name).outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
     }

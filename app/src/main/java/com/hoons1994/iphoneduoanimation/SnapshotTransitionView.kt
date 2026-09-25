@@ -21,6 +21,7 @@ class SnapshotTransitionView(context: Context) : View(context) {
     val rendererError: String? = shaderResult.exceptionOrNull()?.message
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { shader = runtimeShader }
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val fallbackBounds = Rect()
     private val reveal = FoldReveal()
     private var coverBitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.DKGRAY) }
     private var innerBitmap = coverBitmap
@@ -93,6 +94,7 @@ class SnapshotTransitionView(context: Context) : View(context) {
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (w <= 0 || h <= 0) return
+        fallbackBounds.set(0, 0, w, h)
         val previous = if (actualCoverSurface) SurfaceClassifier.Surface.COVER else SurfaceClassifier.Surface.INNER
         val classification = SurfaceClassifier.classify(w, h, previous)
         if (classification == SurfaceClassifier.Surface.UNKNOWN) return
@@ -119,7 +121,7 @@ class SnapshotTransitionView(context: Context) : View(context) {
         if (shader == null) {
             // A failed shader must be obvious in the HUD, not passed off as success.
             canvas.drawBitmap(if (effectiveCoverSurface()) coverBitmap else innerBitmap, null,
-                Rect(0, 0, width, height), bitmapPaint)
+                fallbackBounds, bitmapPaint)
             if (firstFramePending) { firstFramePending = false; onFrameDiagnostic?.invoke("SHADER_ERROR:$rendererError") }
             return
         }

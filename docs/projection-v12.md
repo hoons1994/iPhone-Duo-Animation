@@ -59,7 +59,10 @@ additional Android-free sweep runnable with kotlinc and java.
 `RuntimeShaderSmokeTest` now uses HardwareRenderer/RenderNode/ImageReader, checks
 CPU/AGSL coordinate parity for both axes/sides and cover edges, cross-surface
 atlas coordinates, changed vs unchanged patterned pixels, endpoint restoration,
-and Activity cold startup. It writes 90/120/150/175/180-degree render frames.
+and Activity cold startup, rendered frame commits, manual endpoint/effect buttons,
+and automatic animation advancing across frames. It writes 90/120/150/175/180-degree
+render frames plus available Activity screenshots to AGP additionalTestOutputDir,
+which is collected before the app is uninstalled.
 CI preserves XML, logs and available frame files even on failure. These checks
 must pass in a real run; their existence is not evidence that they passed.
 

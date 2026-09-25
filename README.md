@@ -1,43 +1,55 @@
 # iPhone Duo Animation
 
-Android research project for recreating the progressive fold/unfold transition demonstrated by Apple's iPhone Duo on Samsung Galaxy Fold-class hardware.
+Android research project exploring a fixed-content-plane fold/unfold illusion
+on Galaxy Fold-class hardware. This is an independent approximation, not an
+Apple implementation or a replacement for One UI's system transitions.
 
-## Goal
+## Current implementation: v12 projection lab
 
-Build a Galaxy Fold-friendly prototype that treats physical hinge angle as a continuous visual state instead of a binary screen swap. The renderer combines the real One UI cover/inner handoff with a calibrated GPU transition so the display switch is masked by the same blur/focus motion.
+`manual angle or hinge sensor -> fixed-plane projection -> AGSL -> active app surface`
 
-A normal third-party Android app cannot replace Samsung SystemUI's fold animation for arbitrary apps. This repository therefore separates the reusable transition engine from integration experiments such as controlled snapshots, `Presentation`, a future launcher implementation, or privileged/root approaches.
+The renderer splits the inner display into stationary and moving halves. It
+traces an eye ray through the tilted moving panel into a fixed content plane,
+with depth-dependent local blur and shading. The stationary pane and hinge stay
+unchanged; 180 degrees restores the original. The old blur/cross-fade handoff
+engine is no longer used by MainActivity.
 
-## Current pipeline
+Cold launch intentionally shows a manual **120-degree inner scene** with a
+shared numbered grid. No screenshot import or sensor is needed for this first
+visual check. Use **자동 시연** for animation, **180°** for the resolved endpoint,
+and **효과: 켜짐 / 원본** for A/B. Tap the image to hide or restore controls.
+**센서 연결** switches to physical hinge input. Touching the angle controls
+returns to manual mode so the sensor cannot overwrite the preview.
 
-`hinge sensor -> timestamp-aware filter -> normalized progress -> learned One UI handoff -> AGSL RuntimeShader -> active display`
+The app also includes left/right selection, cover/inner manual modes, user-picked
+snapshots, optional Presentation, and bounded metadata-only CSV diagnostics.
+Two independent screenshots are not automatically registered to each other.
+An optional 240-ms visibility correction is separate from physical angle and
+can be disabled. See [the v12 design and limitations](docs/projection-v12.md).
 
-The current prototype includes:
+## Build and tests
 
-- progressive spatial blur: relatively sharp near the hinge, stronger toward the outer edge;
-- a short blurred source bridge so cover and inner screenshots meet on the same visual state at the physical handoff;
-- separate opening and closing handoff calibration with rolling-median outlier rejection;
-- persisted calibration history/confidence across process restarts;
-- adaptive hinge filtering with a bounded visual lag and unbatched low-latency sensor requests;
-- rotation-aware hinge axis/edge mapping for the shader;
-- a one-screen automatic preview and an unobstructed full-screen preview;
-- an optional internal-display `Presentation` experiment when the platform exposes another presentation-capable built-in display.
+- Android 13+; compile/target API 37, minimum API 33.
+- JDK 17 and Gradle 9.6.0; AGP 9.4.0 with built-in Kotlin.
+- Build: `gradle :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`.
+- Device tests: `bash tools/run-device-tests.sh` with an Android device/emulator.
+- Android-free geometry sweep: compile `FoldProjection.kt` and
+  `tools/ProjectionCheck.kt` with kotlinc and run the resulting jar.
 
-## Target
+CI runs JVM tests, lint, app/instrumentation builds, and API 35 Android tests.
+The Android tests exercise HardwareRenderer coordinate parity, fixed/moving
+pixels, endpoint restoration, Activity controls and advancing auto-demo frames.
+Reports and test images are retained as Actions artifacts. Passing these checks
+is not proof of perceptual continuity or frame pacing on a real foldable.
 
-- Android 13+ (`RuntimeShader` / AGSL)
-- Foldable devices exposing `Sensor.TYPE_HINGE_ANGLE`
-- Primary device family: Samsung Galaxy Z Fold
-- Current build configuration: compile/target API 37, min API 33
+## Scope
 
-## Validation
+This is a foreground visual lab, not a launcher or accessibility overlay.
+Actual Galaxy Fold panel activation, complete sensor delivery, screen-to-screen
+continuity, physical rotation and full-resolution frame pacing still need
+real-device validation. Presentation cannot force another panel to turn on.
+No system-wide or 60/120-fps success is claimed.
 
-GitHub Actions gates changes with JVM unit tests, Android Lint, debug APK assembly, and an Android-emulator instrumentation test that compiles and renders the real AGSL shader with both snapshot inputs.
-
-The remaining device-only validation is the part CI cannot emulate: Samsung's actual cover/inner display switch timing, hinge hardware behavior, and perceptual continuity on a physical Fold.
-
-## Development
-
-Active integration work lives on `feature/presentation-snapshot-poc`. Builds are intentionally not treated as user-ready merely because they compile; the branch is being hardened until the physical Fold test can answer meaningful visual questions rather than basic correctness issues.
-
-See [`docs/architecture.md`](docs/architecture.md) for design details and platform limitations.
+The older [architecture notes](docs/architecture.md) describe the pre-v12
+handoff experiment. Legacy calibration classes remain for history/regression;
+use the v12 design document for the active pipeline.
