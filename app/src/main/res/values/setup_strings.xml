@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="setup_brand">Duo Home</string>
+    <string name="setup_heading">접히는 순간까지,\n자연스러운 홈 화면.</string>
+    <string name="setup_intro">화면을 접고 펼치는 움직임에 맞춰 홈 화면이 흐려지고 선명해집니다. 앱과 위젯을 배치해 나만의 홈을 만들어 보세요.</string>
+    <string name="setup_start_title">Duo Home 시작하기</string>
+    <string name="setup_role_unselected">기본 홈 앱으로 선택하면 홈 버튼과 홈 제스처로 Duo Home을 열 수 있습니다.</string>
+    <string name="setup_role_selected">Duo Home이 기본 홈 앱으로 설정되어 있습니다.</string>
+    <string name="setup_role_pending">시스템 선택창에서 기본 홈 앱을 선택해 주세요.</string>
+    <string name="setup_role_unavailable">이 기기에서는 바로 선택할 수 없습니다. 시스템의 기본 홈 앱 설정에서 Duo Home을 선택해 주세요.</string>
+    <string name="setup_choose_default">Duo Home을 기본 홈 앱으로 선택</string>
+    <string name="setup_role_pending_button">기본 홈 앱 선택 중…</string>
+    <string name="setup_open_home">Duo Home 열기</string>
+    <string name="setup_open_home_settings">기본 홈 앱 설정 열기</string>
+    <string name="setup_preview">먼저 홈 화면 둘러보기</string>
+    <string name="setup_role_launch_error">선택창을 열 수 없습니다. 기기 설정의 ‘기본 앱 → 홈 앱’에서 Duo Home을 선택해 주세요.</string>
+    <string name="setup_home_launch_error">홈 화면을 열지 못했습니다. 잠시 후 다시 시도해 주세요.</string>
+    <string name="setup_fold_title">접힘 효과</string>
+    <string name="setup_sensor_checking">힌지 센서 확인 중</string>
+    <string name="setup_sensor_ready">힌지 센서 사용 가능</string>
+    <string name="setup_sensor_angle">힌지 각도 · %1$d°</string>
+    <string name="setup_sensor_hint">기기를 접거나 펼치면 센서 상태를 확인할 수 있습니다.</string>
+    <string name="setup_sensor_detail">%1$s</string>
+    <string name="setup_sensor_stepped">%1$s\n단계형 센서의 각도 변화를 부드럽게 연결합니다.</string>
+    <string name="setup_sensor_unavailable">사용 가능한 힌지 센서를 찾지 못했습니다.</string>
+    <string name="setup_sensor_unavailable_detail">홈 화면은 사용할 수 있지만, 이 기기에서는 접힘 효과가 작동하지 않을 수 있습니다.</string>
+    <string name="setup_fold_description">실제 힌지 각도에 맞춰 배경화면, 앱, 위젯을 실시간으로 렌더링합니다. 효과는 Duo Home 안에서 적용됩니다.</string>
+    <string name="setup_customize_title">내 홈 화면 꾸미기</string>
+    <string name="setup_step_apps">홈의 검색 버튼에서 앱을 찾고, 길게 눌러 홈 화면이나 Dock에 추가하세요.</string>
+    <string name="setup_step_widgets">‘편집’에서 앱과 위젯을 추가하거나 배경화면을 바꿔 보세요. 위젯을 길게 누르면 크기와 페이지를 바꿀 수 있습니다.</string>
+    <string name="setup_step_pages">좌우로 넘겨 세 개의 홈 페이지를 사용하세요. 앱을 다른 앱 위에 잠시 놓으면 폴더가 만들어집니다.</string>
+    <string name="setup_layout_notice">기존 런처의 아이콘 배치와 위젯은 자동으로 옮겨오지 않습니다. Duo Home에서 다시 배치해 주세요.</string>
+    <string name="setup_return_notice">이전 런처로 돌아가려면 기기 설정의 ‘기본 앱 → 홈 앱’에서 변경할 수 있습니다.</string>
+</resources>

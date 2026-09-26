@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="home_widget_bind_failed">위젯 연결 화면을 열 수 없습니다. 다른 위젯을 선택해 주세요.</string>
+    <string name="home_edit">편집</string>
+    <string name="home_done">완료</string>
+    <string name="home_search_apps">앱 검색</string>
+    <string name="home_search_short">검색</string>
+    <string name="home_search_hint">앱 이름으로 검색</string>
+    <string name="home_add_app">홈에 앱 추가</string>
+    <string name="home_add_widget">위젯 추가</string>
+    <string name="home_wallpaper">배경화면</string>
+    <string name="home_wallpaper_unavailable">배경화면 설정을 열 수 없습니다.</string>
+    <string name="home_page_number">홈 화면 %1$d페이지</string>
+    <string name="home_empty">이곳을 나만의 홈으로\n눌러서 자주 쓰는 앱을 추가하세요</string>
+    <string name="home_empty_edit">앱을 추가하거나 아래에서 위젯을 골라보세요\n앱을 길게 눌러 위치를 바꿀 수 있어요</string>
+    <string name="home_add_dock">독에 앱 추가</string>
+    <string name="home_all_apps">모든 앱</string>
+    <string name="home_close">닫기</string>
+    <string name="home_clear_search">검색어 지우기</string>
+    <string name="home_app_count">설치된 앱 %1$d개</string>
+    <string name="home_select_apps_hint">추가할 앱을 누르세요 · 여러 개 선택할 수 있어요</string>
+    <string name="home_pin_page">현재 홈 %1$d페이지에 추가합니다</string>
+    <string name="home_dock_capacity_hint">어느 페이지에서든 꺼내 쓰는 앱 · 최대 4개</string>
+    <string name="home_no_search_results">검색 결과가 없어요\n다른 앱 이름을 입력해 보세요</string>
+    <string name="home_app_info">앱 정보</string>
+    <string name="home_pinned_description">, 홈에 추가됨</string>
+    <string name="home_widget_settings">설정</string>
+    <string name="home_launch_failed">앱을 열 수 없습니다. 앱 설치 상태를 확인해 주세요.</string>
+    <string name="home_wallpaper_title">홈 배경화면</string>
+    <string name="home_wallpaper_choose_photo">내 사진에서 선택</string>
+    <string name="home_wallpaper_restore_default">Duo 기본 배경 사용</string>
+    <string name="home_wallpaper_read_failed">이 사진을 사용할 수 없습니다. 다른 사진을 선택해 주세요.</string>
+    <string name="home_wallpaper_applied">홈 배경화면을 바꿨습니다.</string>
+</resources>

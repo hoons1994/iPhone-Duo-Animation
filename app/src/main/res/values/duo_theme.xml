@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="duo_icon_background">#112531</color>
+    <style name="Theme.DuoHome" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#9BD9D0</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:statusBarColor">#112531</item>
+        <item name="android:navigationBarColor">#112531</item>
+        <item name="android:windowBackground">#112531</item>
+    </style>
+</resources>
