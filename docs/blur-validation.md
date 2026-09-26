@@ -1,6 +1,6 @@
 # Live blur architecture and historical regression evidence
 
-## Current 0.6.1 launcher renderer
+## Current 0.6.2 launcher renderer
 
 `HomeActivity` now renders its current view tree through `LiveFoldLayout` and
 Android's `RenderEffect` input. `LiveFoldEffects` supplies four live levels:
@@ -14,7 +14,7 @@ Matching the reference binomial kernel's variance is an approximation; its
 minus that angle. Handoff calibration and direction do not alter the optical
 pose. The eye is hinge-aligned, including on the cover. Projection stops at
 87.3 degrees (`0.97 * 90` from the Android adaptation), while material motion
-uses the full 90-degree bend envelope. `LiveFoldShader` sets radius from
+uses the full 90-degree bend envelope. `LiveFoldShader` starts its material radius from
 `maxBlur * smoothstep(0, 1, bend / 90) * pow(edge, 1.35)`, with inputs clamped
 to their valid ranges and `edge` measured on the pane from hinge to outer edge.
 These material coordinates keep frost present when projected source coordinates
@@ -22,6 +22,16 @@ compress. The geometry draws on
 [`iphone-duo/main.js`](https://github.com/chuspeeism/iphone-duo/blob/main/main.js);
 the projection cap and material-space envelope follow
 [`ClassicGlassShader.kt`](https://github.com/joeconsorti/duo-fold-live/blob/main/app/src/main/java/org/duofold/live/ClassicGlassShader.kt).
+
+The 0.6.2 shader then compensates for local projection magnification. With
+`depth = eyeDistance - gap`, it multiplies the material radius by
+`max(1, (depth / eyeDistance)^2 / max(cos(angle), 0.001))` and clamps the result
+to `maxBlurPx`. This is the reciprocal source-coordinate derivative along the
+pane, bounded below by one. It targets readable stripes caused by expanding a
+narrow source region near the edge-on projection limit. The branch-pruning bound
+also includes this magnification, so a required stronger blur level is not
+discarded. This compensation is a launcher-specific adaptation, not a formula
+copied from the reference shader, and its visual result has not been measured.
 
 The shader projects each level through the same glass geometry, interpolates
 adjacent levels, and adds weighted premultiplied colors. The fixed pane selects
@@ -40,17 +50,33 @@ motion, interpolation between blur levels, premultiplied composition, clear
 endpoints, rotations, and both physical display handoffs. Device measurements
 are also needed for frame pacing and GPU cost. The historical numbers below do
 not validate this graph or establish that it runs faster than the snapshot path.
-The 0.6.1 sensor path retains quality observations across monitor stop/start,
+The sensor path retains quality observations across monitor stop/start,
 prioritizes observed intermediate-angle streams, guards stop-only jumps, and
 bridges source or mode changes from the prior filtered pose. Home resume gates
 the effect on a fresh real sample. These lifecycle and sensor behaviors require
-their own checks in addition to shader pixels.
+their own checks in addition to shader pixels. In 0.6.2, fine-filter settling
+keeps the adaptive time constant selected by the latest real sensor update,
+instead of switching each settling frame to the slow 55 ms response. This is
+intended to remove alternating fast/slow convergence between sensor events.
 
-Tests have not been run for the 0.6.1 model, sensor, and reflow changes. Neither reference
+The 0.6.2 Dock also has explicit management, replacement, ordering, and move-to-home
+actions. Shader diagnostics do not exercise these interactions, their persisted
+layout, or preservation of displaced folders and shortcuts.
+
+Tests have not been run for the 0.6.2 frost, sensor-settling, and Dock changes. Neither reference
 fidelity nor Android GPU performance is verified for this revision.
+
+`:app:assembleDebug` completed successfully for 0.6.2 (version code 9) on
+2026-09-26. No ADB device was attached. This result covers APK compilation and
+packaging; the AGSL shader is compiled at runtime and device interaction,
+animation quality, and frame pacing remain unverified.
+
+## Historical 0.6.1 build
+
 `:app:assembleDebug` completed successfully for version 0.6.1 (version code 8)
 on 2026-09-26. This compiles and packages the APK; AGSL compiles on the device at
 runtime, so an APK build does not validate shader execution or animation quality.
+That build predates the 0.6.2 changes and is not a build result for this revision.
 
 ## Historical 0.6.0 production shader check
 
@@ -61,7 +87,7 @@ native Gaussian levels, and the production shader projects and weights each
 level. The checks cover opacity preservation, fixed-pane sharpness, moving-pane
 frost without mistaking black output for blur, and unchanged endpoint pixels.
 That run's diagnostics were written under `build/live-shader-report/`. Those
-32 passing states describe the earlier model and do not validate 0.6.1. The
+32 passing states describe the earlier model and do not validate 0.6.2. The
 fixture has been updated for the new angle mapping, eye ratios, material motion,
 and native blur conversion, but it has not been run for this revision.
 
@@ -108,7 +134,7 @@ with a 45-degree virtual tilt cap and a density-aware 320 mm eye distance. Blur
 and attenuation follow the glass-to-plane gap while perspective lookup follows
 the ray intersection. This replaces the fixed model dimensions and 90-degree
 collapse that stretched launcher widgets. This remains in the legacy
-`TransitionTuning`/snapshot path and does not describe the 0.6.1 live model.
+`TransitionTuning`/snapshot path and does not describe the 0.6.2 live model.
 It follows the physical model in
 [Atomicx7's shader](https://github.com/Atomicx7/Duo-animation/blob/master/app/src/main/res/raw/duo_fold.agsl)
 and its two-pane Android adaptation in

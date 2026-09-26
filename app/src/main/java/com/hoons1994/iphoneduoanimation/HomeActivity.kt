@@ -770,6 +770,10 @@ class HomeActivity : Activity() {
                 }
             }
             setOnLongClickListener {
+                if (dock && !isEditingHome) {
+                    showDockActions(shortcut.component)
+                    return@setOnLongClickListener true
+                }
                 if (!isEditingHome) {
                     setEditingHome(true, redraw = false)
                 }
@@ -811,7 +815,15 @@ class HomeActivity : Activity() {
             cell.addView(icon, LinearLayout.LayoutParams(dp(iconSize), dp(iconSize)))
         }
 
-        if (!dock) {
+        if (dock && isEditingHome) {
+            cell.addView(TextView(this).apply {
+                text = getString(R.string.home_edit)
+                textSize = 10f
+                includeFontPadding = false
+                gravity = Gravity.CENTER
+                setTextColor(0xe6ffffff.toInt())
+            }, LinearLayout.LayoutParams(-1, dp(14)))
+        } else if (!dock) {
             val label = TextView(this).apply {
                 text = if (isFolder) folder?.title ?: "폴더" else info?.loadLabel(packageManager)
                 textSize = 12f
@@ -1085,6 +1097,11 @@ class HomeActivity : Activity() {
     }
 
     private fun showFolderActions(id: String) {
+        val component = folderComponent(id)
+        if (pinnedShortcuts().any { it.component == component && it.page == DOCK_PAGE }) {
+            showDockActions(component)
+            return
+        }
         val folder = homeFolder(id) ?: return
         showManagedDialog(AlertDialog.Builder(this)
             .setTitle(folder.title)
@@ -1141,20 +1158,18 @@ class HomeActivity : Activity() {
     }
 
     private fun showShortcutActions(component: String) {
+        val shortcut = pinnedShortcuts().firstOrNull { it.component == component } ?: return
+        if (shortcut.page == DOCK_PAGE) {
+            showDockActions(component)
+            return
+        }
         if (isFolderComponent(component)) {
             showFolderActions(folderId(component))
             return
         }
         val actions = ArrayList<Pair<String, () -> Unit>>()
-        val shortcut = pinnedShortcuts().firstOrNull { it.component == component }
-        if (shortcut != null && shortcut.page != DOCK_PAGE &&
-            pinnedShortcuts().count { it.page == DOCK_PAGE } < DOCK_SLOT_COUNT) {
-            actions += "Dock에 추가" to {
-                savePinnedShortcuts(pinnedShortcuts().map {
-                    if (it.component == component) it.copy(page = DOCK_PAGE) else it
-                })
-                renderShortcuts()
-            }
+        ComponentName.unflattenFromString(component)?.let { target ->
+            actions += getString(R.string.home_add_dock) to { addAppToDock(target) }
         }
         for (page in 0 until HOME_PAGE_COUNT) {
             if (shortcut?.page == page) continue
@@ -1173,12 +1188,130 @@ class HomeActivity : Activity() {
         actions += "취소" to {}
         showManagedDialog(AlertDialog.Builder(this)
             .setItems(actions.map { it.first }.toTypedArray()) { dialog, which ->
-                actions.getOrNull(which)?.second?.invoke()
                 dialog.dismiss()
+                actions.getOrNull(which)?.second?.invoke()
             })
     }
 
-    private fun showAppBrowser(pinOnSelect: Boolean, pinToDock: Boolean = false) {
+    private fun showDockActions(component: String) {
+        val dock = pinnedShortcuts().filter { it.page == DOCK_PAGE }
+        val index = dock.indexOfFirst { it.component == component }
+        if (index < 0) return
+        val actions = ArrayList<Pair<String, () -> Unit>>()
+        actions += getString(R.string.home_dock_replace) to {
+            showAppBrowser(pinOnSelect = true, pinToDock = true, replaceDockComponent = component)
+        }
+        if (index > 0) actions += getString(R.string.home_dock_move_left) to { reorderDock(component, -1) }
+        if (index < dock.lastIndex) actions += getString(R.string.home_dock_move_right) to { reorderDock(component, 1) }
+        actions += getString(R.string.home_dock_remove_to_home) to { moveDockItemToHome(component, currentPage) }
+        for (page in 0 until HOME_PAGE_COUNT) {
+            if (page != currentPage) {
+                actions += getString(R.string.home_dock_move_page, page + 1) to { moveDockItemToHome(component, page) }
+            }
+        }
+        if (isFolderComponent(component)) {
+            homeFolder(folderId(component))?.let { folder ->
+                actions += getString(R.string.home_folder_rename) to { showRenameFolder(folder) }
+                actions += getString(R.string.home_folder_ungroup) to { ungroupFolder(folder) }
+            }
+        } else {
+            ComponentName.unflattenFromString(component)?.let { app ->
+                actions += getString(R.string.home_app_info) to {
+                    runCatching { startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        android.net.Uri.parse("package:${app.packageName}"))) }
+                }
+            }
+        }
+        showManagedDialog(AlertDialog.Builder(this)
+            .setTitle(getString(R.string.home_dock_item_title, index + 1, shortcutLabel(component)))
+            .setItems(actions.map { it.first }.toTypedArray()) { dialog, which ->
+                // Dismiss first: a replacement drawer or folder-name dialog
+                // must not be blocked by the existing modal's duplicate guard.
+                dialog.dismiss()
+                actions.getOrNull(which)?.second?.invoke()
+            }
+            .setNegativeButton(R.string.home_close, null))
+    }
+
+    private fun shortcutLabel(component: String): String {
+        if (isFolderComponent(component)) return homeFolder(folderId(component))?.title ?: "폴더"
+        val name = ComponentName.unflattenFromString(component) ?: return component
+        return runCatching { packageManager.getActivityInfo(name, 0).loadLabel(packageManager).toString() }
+            .getOrDefault(name.packageName)
+    }
+
+    private fun reorderDock(component: String, direction: Int) {
+        val entries = pinnedShortcuts().toMutableList()
+        val dockIndices = entries.indices.filter { entries[it].page == DOCK_PAGE }
+        val position = dockIndices.indexOfFirst { entries[it].component == component }
+        if (position < 0) return
+        val target = position + direction
+        if (target !in dockIndices.indices) return
+        val sourceIndex = dockIndices[position]
+        val targetIndex = dockIndices[target]
+        val previous = entries[sourceIndex]
+        entries[sourceIndex] = entries[targetIndex]
+        entries[targetIndex] = previous
+        savePinnedShortcuts(entries)
+        renderShortcuts()
+    }
+
+    private fun moveDockItemToHome(component: String, page: Int) {
+        val entries = pinnedShortcuts().toMutableList()
+        val index = entries.indexOfFirst { it.component == component && it.page == DOCK_PAGE }
+        if (index < 0) return
+        val moved = entries.removeAt(index).copy(page = page.coerceIn(0, HOME_PAGE_COUNT - 1))
+        entries.add(pageInsertionIndex(entries, moved.page), moved)
+        savePinnedShortcuts(entries)
+        renderShortcuts()
+        Toast.makeText(this, getString(R.string.home_dock_moved_home, moved.page + 1), Toast.LENGTH_SHORT).show()
+    }
+
+    /** Keep both entries, including intact folders, when replacing a full dock slot. */
+    private fun replaceDockItem(target: String, incoming: ComponentName): Boolean {
+        val entries = pinnedShortcuts().toMutableList()
+        val targetIndex = entries.indexOfFirst { it.component == target && it.page == DOCK_PAGE }
+        if (targetIndex < 0) {
+            Toast.makeText(this, R.string.home_dock_target_missing, Toast.LENGTH_SHORT).show()
+            return false
+        }
+        val name = incoming.flattenToString()
+        if (target == name) return true
+        val old = entries[targetIndex]
+        val incomingIndex = entries.indexOfFirst { it.component == name }
+        val swapsDockSlots = incomingIndex >= 0 && entries[incomingIndex].page == DOCK_PAGE
+        entries[targetIndex] = PinnedShortcut(name, DOCK_PAGE)
+        if (incomingIndex >= 0) {
+            // The old item takes the incoming app's previous place. Swapping
+            // another dock item therefore preserves slot count and order.
+            entries[incomingIndex] = old.copy(page = entries[incomingIndex].page)
+        } else {
+            entries.add(pageInsertionIndex(entries, currentPage), old.copy(page = currentPage))
+        }
+        savePinnedShortcuts(entries)
+        renderShortcuts()
+        (drawerGrid?.adapter as? BaseAdapter)?.notifyDataSetChanged()
+        Toast.makeText(this, if (swapsDockSlots) R.string.home_dock_swapped else R.string.home_dock_replaced,
+            Toast.LENGTH_SHORT).show()
+        return true
+    }
+
+    private fun showDockReplacementTargets(incoming: ComponentName) {
+        val dock = pinnedShortcuts().filter { it.page == DOCK_PAGE }
+        if (dock.isEmpty()) return
+        showManagedDialog(AlertDialog.Builder(this)
+            .setTitle(R.string.home_dock_full_choose_slot)
+            .setItems(dock.mapIndexed { index, shortcut ->
+                getString(R.string.home_dock_item_title, index + 1, shortcutLabel(shortcut.component))
+            }.toTypedArray()) { dialog, which ->
+                dialog.dismiss()
+                dock.getOrNull(which)?.let { replaceDockItem(it.component, incoming) }
+            }
+            .setNegativeButton(R.string.home_close, null))
+    }
+
+    private fun showAppBrowser(pinOnSelect: Boolean, pinToDock: Boolean = false,
+        replaceDockComponent: String? = null) {
         if (appDrawer != null || activeDialog?.isShowing == true || widgetFlowPending) return
         drawerClosing = false
         val apps = launcherActivities()
@@ -1208,6 +1341,7 @@ class HomeActivity : Activity() {
         val titleStack = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val title = TextView(this).apply {
             text = getString(when {
+                replaceDockComponent != null -> R.string.home_dock_replace
                 pinToDock -> R.string.home_add_dock
                 pinOnSelect -> R.string.home_add_app
                 else -> R.string.home_all_apps
@@ -1222,8 +1356,11 @@ class HomeActivity : Activity() {
             setPadding(0, dp(5), 0, 0)
         }
         val updateCount = {
-            count.text = if (pinOnSelect) getString(R.string.home_select_apps_hint)
-                else getString(R.string.home_app_count, adapter.count)
+            count.text = when {
+                replaceDockComponent != null -> getString(R.string.home_dock_select_replacement)
+                pinOnSelect -> getString(R.string.home_select_apps_hint)
+                else -> getString(R.string.home_app_count, adapter.count)
+            }
         }
         updateCount()
         titleStack.addView(title)
@@ -1262,7 +1399,11 @@ class HomeActivity : Activity() {
         content.addView(searchRow, LinearLayout.LayoutParams(-1, dp(54)))
         if (pinOnSelect) {
             content.addView(TextView(this).apply {
-                text = getString(if (pinToDock) R.string.home_dock_capacity_hint else R.string.home_pin_page, currentPage + 1)
+                text = getString(when {
+                    replaceDockComponent != null -> R.string.home_dock_replace_preserves_items
+                    pinToDock -> R.string.home_dock_capacity_hint
+                    else -> R.string.home_pin_page
+                }, currentPage + 1)
                 textSize = 12f
                 setTextColor(0xffbad4ff.toInt())
                 setPadding(dp(4), dp(14), 0, 0)
@@ -1315,7 +1456,9 @@ class HomeActivity : Activity() {
             val item = adapter.getItem(position)
             val component = ComponentName(item.activityInfo.packageName, item.activityInfo.name)
             if (pinOnSelect) {
-                if (pinToDock) addAppToDock(component) else addAppToHome(component)
+                if (replaceDockComponent != null) {
+                    if (replaceDockItem(replaceDockComponent, component)) closeAppDrawer(animate = false)
+                } else if (pinToDock) addAppToDock(component) else addAppToHome(component)
                 adapter.notifyDataSetChanged()
             } else {
                 launchApplication(component, source)
@@ -1399,7 +1542,7 @@ class HomeActivity : Activity() {
             return
         }
         if (entries.count { it.page == DOCK_PAGE } >= DOCK_SLOT_COUNT) {
-            Toast.makeText(this, "Dock에는 앱을 ${DOCK_SLOT_COUNT}개까지 둘 수 있습니다.", Toast.LENGTH_SHORT).show()
+            showDockReplacementTargets(component)
             return
         }
         entries.removeAll { it.component == name }

@@ -23,6 +23,11 @@ renders Duo Home's current views directly through Android's graphics pipeline.
    then use **편집** to rename or unpack it. The four-slot Dock stays visible
    across pages. Long-press a widget to move it, choose a height preset, or
    remove it.
+6. Long-press a Dock item, or tap it while editing, to open its management menu.
+   Use **다른 앱으로 교체**, **왼쪽으로 이동**, **오른쪽으로 이동**, or
+   **독에서 빼기 · 현재 홈으로**. All four occupied slots can still be replaced.
+   Replacing an item preserves it on a home page; choosing another Dock app
+   swaps their positions. Folders retain their contents when moved out of the Dock.
 
 Duo Home owns its wallpaper-backed home screen, shortcut list, widget host, and
 app drawer. One UI Home's icon arrangement and widgets cannot be imported, so
@@ -46,7 +51,7 @@ physical hinge → filtered angle → per-frame transition
   supplies the current view and child contents, so clock and widget updates can
   remain visible while folding. There is no app-managed bitmap capture, readback,
   idle capture timer, or mipmap worker in the home rendering path.
-- In 0.6.1, `DuoFoldModel` maps the physical hinge angle directly: the cover
+- The 0.6.2 renderer retains `DuoFoldModel`'s direct physical-angle mapping: the cover
   bends by that angle, and the inner pane bends by 180 degrees minus that
   angle. Display handoff estimates and opening/closing direction do not remap
   the optical pose. Projection alone is capped at 87.3 degrees to avoid collapse
@@ -55,6 +60,10 @@ physical hinge → filtered angle → per-frame transition
   the bend and position on the pane. Frost increases away from the hinge even
   when projected image coordinates compress. Native Gaussian radii approximate
   the reference binomial kernel's variance; the filters are not identical.
+- Version 0.6.2 increases local frost where projection stretches a narrow source
+  region into a wide strip, bounded by the existing maximum blur. This is a
+  launcher-specific adaptation intended to suppress readable streaks near the
+  edge-on position; it is not part of the reference shader's frost formula.
 - A short frame follower bridges sensor updates. Resolved endpoints remove the
   effect, and fold frame callbacks stop once the angle settles. Configuration
   changes resize the existing icons and widget hosts rather than reloading
@@ -63,6 +72,8 @@ physical hinge → filtered angle → per-frame transition
   Learned sensor quality survives the monitor's stop/start cycle; stop-only
   jumps and source changes are eased from the previous filtered pose. Resuming
   the home screen waits for a fresh sensor sample before showing the fold effect.
+  Between fine-sensor samples, settling continues with the latest adaptive
+  response time so sampling and display frames follow the same response.
 - No accessibility service, screen-capture permission, or gesture injection is
   used.
 
@@ -86,7 +97,7 @@ The panels reuse the launcher's wallpaper source without capturing the screen.
   vendor hinge sensor.
 - Select Duo Home as the system home app before using its home screen.
 - Duo Home has three home pages, searchable app browsing, home-screen folders,
-  icon reordering, and a four-slot Dock with widget placement and height presets.
+  icon reordering, an editable four-slot Dock, and widget placement and height presets.
   It cannot import another launcher's layout and does not yet provide
   notification badges or configurable launcher gesture settings. Some widget
   providers may ignore the requested size options.
@@ -96,8 +107,9 @@ The panels reuse the launcher's wallpaper source without capturing the screen.
   widget updates during folding, and frame pacing need evaluation on a Fold
   device; removing bitmap capture does not establish a performance improvement.
 - Version 0.6.0 passed 56 JVM tests and 32 desktop shader pixel states. Those are
-  historical results for the previous model. Tests have not been run for the
-  0.6.1 angle, frost, and layout changes. Android GPU tests and physical-device
+  historical results for the previous model; 0.6.1 subsequently built an APK.
+  Tests have not been run for the 0.6.2 frost, sensor-settling, and Dock changes.
+  Android GPU tests and physical-device
   fidelity remain unverified; no ADB device or emulator was available in the
   earlier checks. See [`docs/blur-validation.md`](docs/blur-validation.md).
 

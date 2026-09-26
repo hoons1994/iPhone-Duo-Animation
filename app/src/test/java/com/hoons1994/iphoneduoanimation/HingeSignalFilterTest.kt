@@ -188,7 +188,8 @@ class HingeSignalFilterTest {
             filter.update(90f, base)
             var output = filter.update(120f, base + 8_000_000L)
             for (elapsed in frameMillis..128L step frameMillis) {
-                output = requireNotNull(filter.settle(base + 8_000_000L + elapsed * 1_000_000L))
+                // The adaptive response may finish before the observation time.
+                output = filter.settle(base + 8_000_000L + elapsed * 1_000_000L) ?: output
             }
             return output.filteredAngleDegrees
         }

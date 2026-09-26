@@ -29,6 +29,7 @@ class HingeSignalFilter {
     private var directionAnchorAngle = Float.NaN
     private var previousTimestampNanos = Long.MIN_VALUE
     private var lastFilterTimestampNanos = Long.MIN_VALUE
+    private var responseTimeConstant = SLOW_TIME_CONSTANT_SECONDS
     private var opening = true
 
     val hasPendingSettle: Boolean
@@ -54,9 +55,9 @@ class HingeSignalFilter {
                 (angularVelocity / FAST_MOTION_DEGREES_PER_SECOND).coerceIn(0f, 1f),
                 (trackingError / FAST_TRACKING_ERROR_DEGREES).coerceIn(0f, 1f),
             )
-            val timeConstant = SLOW_TIME_CONSTANT_SECONDS +
+            responseTimeConstant = SLOW_TIME_CONSTANT_SECONDS +
                 (FAST_TIME_CONSTANT_SECONDS - SLOW_TIME_CONSTANT_SECONDS) * speedFactor
-            val alpha = 1f - exp((-filterDtSeconds / timeConstant).toDouble()).toFloat()
+            val alpha = 1f - exp((-filterDtSeconds / responseTimeConstant).toDouble()).toFloat()
 
             var next = filteredAngle + (raw - filteredAngle) * alpha
             val residual = raw - next
@@ -92,7 +93,10 @@ class HingeSignalFilter {
         if (elapsed <= 0f) return null
         filteredAngle = FrameSmoothing.step(
             filteredAngle, previousRawAngle, elapsed,
-            SLOW_TIME_CONSTANT_SECONDS, SETTLE_DEGREES,
+            // Continue the same response between sensor samples. Switching to
+            // 55 ms on every display frame after an 8 ms sensor update produced
+            // alternating fast/slow motion even at a steady physical fold speed.
+            responseTimeConstant, SETTLE_DEGREES,
         )
         lastFilterTimestampNanos = maxOf(lastFilterTimestampNanos, timestampNanos)
         return Output(previousRawAngle, filteredAngle, filteredAngle / 180f, opening,
@@ -105,6 +109,7 @@ class HingeSignalFilter {
         directionAnchorAngle = Float.NaN
         previousTimestampNanos = Long.MIN_VALUE
         lastFilterTimestampNanos = Long.MIN_VALUE
+        responseTimeConstant = SLOW_TIME_CONSTANT_SECONDS
         opening = true
     }
 

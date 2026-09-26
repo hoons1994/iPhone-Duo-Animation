@@ -53,12 +53,21 @@ internal object LiveFoldShader {
             // eased envelope; near-edge-on projection cannot erase the blur.
             float paneExtent = coverSurface > 0.5 ? axisExtent : axisExtent * 0.5;
             float edge = clamp(distance / max(paneExtent, 1.0), 0.0, 1.0);
-            float radius = maxBlurPx * motionAmount * pow(edge, 1.35);
+            float depth = eyeDistancePx - gap;
+            if (depth <= 0.001) {
+                return level < 0.5 ? half4(0.0, 0.0, 0.0, 1.0) : half4(0.0);
+            }
+            // The source-coordinate derivative along the pane is
+            // J = cos(angle) / (1 - gap / eyeDistance)^2. Near edge-on, 1/J
+            // can exceed 20: weakly blurred text becomes a wide readable stripe.
+            // Compensate frost by this local magnification, bounded by the live
+            // blur pyramid. This is a launcher adaptation, not a new angle cap.
+            float relativeDepth = depth / eyeDistancePx;
+            float magnification = max(1.0, relativeDepth * relativeDepth / max(foldCos, 0.001));
+            float radius = min(maxBlurPx, maxBlurPx * motionAmount * pow(edge, 1.35) * magnification);
             half weight = half(levelWeight(radius));
             if (weight <= 0.0) return half4(0.0);
 
-            float depth = eyeDistancePx - gap;
-            if (depth <= 0.001) return half4(0.0, 0.0, 0.0, weight);
             float eyeAxis = hinge;
             float perspective = eyeDistancePx / depth;
             float hitAxis = eyeAxis + (glassAxis - eyeAxis) * perspective;
@@ -93,7 +102,10 @@ internal class LiveFoldEffects {
                 blur(cachedBlurRadius / 3f), blur(cachedBlurRadius))
         }
         var combined: RenderEffect? = null
-        val reachableRadius = geometry.maxBlurPx * geometry.motion
+        // Magnification is at most 1/cos(angle); the previous material-only
+        // bound could now skip a blur branch that has a nonzero contribution.
+        val reachableRadius = minOf(geometry.maxBlurPx,
+            geometry.maxBlurPx * geometry.motion / geometry.foldCos.coerceAtLeast(0.001f))
         shaders.forEachIndexed { index, shader ->
             // A branch that is transparent everywhere must not run its native
             // blur pass, especially during the long, almost-clear fold tail.

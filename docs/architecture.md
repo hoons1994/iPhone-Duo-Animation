@@ -26,7 +26,7 @@ persisted grant for the chosen URI; decoding is bounded and performed off the
 UI thread. The user can restore the default background. This requires access
 only to the selected document, with no broad storage permission.
 
-Long-pressing an app starts a drag. A short drop reorders it; pausing over an app
+Long-pressing a home-grid app starts a drag. A short drop reorders it; pausing over an app
 creates a folder or adds the app to an existing folder. Folder dialogs use an
 icon grid and support opening, extracting, removing, renaming, or ungrouping
 apps. The four-slot Dock is shared across pages and accepts apps from the app
@@ -34,6 +34,16 @@ drawer or by drag-and-drop. Widgets can be moved between pages, removed, and
 given a height preset. The launcher passes the chosen dimensions to the widget
 provider and sizes its host frame to match; individual providers can still
 choose how to respond to those options.
+
+In 0.6.2, Dock items expose a management menu on a normal long press or an
+edit-mode tap. The menu supports app replacement, one-position left/right
+ordering, and moving an entry to a home page. A full Dock offers a target-slot
+picker when another app is added. Replacement keeps the displaced entry: it
+takes the incoming pinned app's previous location, or goes to the current home
+page if the incoming app was not pinned. Choosing another Dock app swaps the
+two slots. Folder entries preserve their contents when moved or displaced and
+also offer rename and ungroup actions. These edits persist in the existing
+shortcut/folder preferences.
 
 The interaction model takes cues from the separate workspace, drag-and-drop,
 folder, app-drawer, and widget areas in [AOSP Launcher3](https://android.googlesource.com/platform/packages/apps/Launcher3/+/f6ba9499de/src/com/android/launcher3/).
@@ -66,7 +76,7 @@ current `RenderNode` contents, including ordinary child views, as the shader
 input. Launcher redraws and widget updates can therefore reach the folded pane
 without waiting for an app-managed snapshot refresh.
 
-The 0.6.1 live renderer uses `DuoFoldModel`, independently of the legacy
+The 0.6.2 live renderer uses `DuoFoldModel`, independently of the legacy
 `TransitionTuning` snapshot model. Given hinge angle `h`, cover bend is `h` and
 inner bend is `180 - h`. Neither a learned display-switch angle nor a change of
 opening/closing direction changes this mapping. `LiveFoldGeometry` shares the
@@ -86,6 +96,15 @@ by moving-pane width. Darkening uses a similar outward envelope. Keeping these
 values in pane coordinates prevents the historical loss of frost when texture
 coordinates compress near edge-on projection.
 
+Version 0.6.2 adds local projection compensation to the frost radius. Along
+the moving pane, the source-coordinate derivative is
+`J = cos(angle) / (1 - gap / eyeDistance)^2`. The radius is multiplied by
+`max(1, 1 / J)` and capped at the existing `maxBlurPx`. This targets the wide,
+readable strip that can result when a narrow source region is strongly
+magnified near the 87.3-degree projection limit. The compensation is a Duo Home
+adaptation; it is not the original reference shader's frost model and does not
+introduce another angle cap. Its appearance on hardware remains unverified.
+
 `LiveFoldEffects` supplies sharp content and three native Gaussian levels whose
 target source-space blur radii are one ninth, one third, and the full maximum.
 It converts each target to Android's native radius using
@@ -93,7 +112,9 @@ It converts each target to Android's native radius using
 reference 5x5 binomial footprint; native filtering and interpolation do not
 reproduce that kernel exactly. `LiveFoldShader` interpolates adjacent levels
 and adds weighted premultiplied colors. The fixed inner pane stays on the sharp
-branch. Branches that cannot contribute at the current bend are omitted.
+branch. Branches that cannot contribute are omitted using a bound that includes
+the possible projection magnification, so compensation can reach stronger blur
+levels when needed.
 
 The launcher path does not call `View.draw()` into a bitmap, read pixels back
 to the CPU, generate cached mipmaps, or schedule idle captures. Android still
@@ -132,7 +153,10 @@ Touch coordinates follow the displayed glass projection. During Android's
 system drag-and-drop, the fold effect temporarily clears so its drag shadow and
 drop targets share untransformed coordinates, then resumes at the current angle.
 Fine sensors finish converging to their last real sample even when an on-change
-sensor stops emitting. Those settling frames do not refresh calibration age.
+sensor stops emitting. In 0.6.2, these settling frames retain the adaptive time
+constant from the latest sensor update. This keeps their response consistent
+with the real samples, including during fast motion. Settling frames do not
+refresh calibration age or the raw sample's velocity baseline.
 
 The input mechanism is documented in Android's
 [AGSL guide](https://developer.android.com/develop/ui/views/graphics/agsl/using-agsl)
@@ -161,14 +185,15 @@ display geometry → view reflow + display classification (independent of optica
   selected wallpaper URI; they contain no screenshots.
 - Widget sizing uses fixed height presets rather than a drag handle. Provider
   compatibility and actual rendered dimensions need device validation.
-- Notification badges, configurable launcher gestures, and Dock layout
-  customization are not implemented; the Dock currently has four fixed slots.
+- Notification badges and configurable launcher gestures are not implemented.
+  Dock contents and ordering are editable, while its capacity remains four slots.
 
 ## Device validation still required
 
 The previous 0.6.0 implementation passed 56 JVM tests and 32 desktop Skia pixel
-states across four rotations. Those results predate the 0.6.1 model and layout
-changes. Tests have not been run for this revision. Desktop checks cannot
+states across four rotations. Version 0.6.1 later completed an APK build. These
+are historical results; tests have not been run for the 0.6.2 frost,
+sensor-settling, and Dock changes. Desktop checks cannot
 execute Android's `RenderEffect` graph, validate glass-panel appearance, or
 measure device performance. Android GPU instrumentation remains unrun; no ADB
 device or emulator was available during the earlier checks.

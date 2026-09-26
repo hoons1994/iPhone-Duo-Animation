@@ -31,4 +31,19 @@
     <string name="home_wallpaper_restore_default">Duo 기본 배경 사용</string>
     <string name="home_wallpaper_read_failed">이 사진을 사용할 수 없습니다. 다른 사진을 선택해 주세요.</string>
     <string name="home_wallpaper_applied">홈 배경화면을 바꿨습니다.</string>
+    <string name="home_dock_item_title">독 %1$d · %2$s</string>
+    <string name="home_dock_replace">다른 앱으로 교체</string>
+    <string name="home_dock_move_left">왼쪽으로 이동</string>
+    <string name="home_dock_move_right">오른쪽으로 이동</string>
+    <string name="home_dock_remove_to_home">독에서 빼기 · 현재 홈으로</string>
+    <string name="home_dock_move_page">홈 %1$d페이지로 이동</string>
+    <string name="home_dock_moved_home">홈 %1$d페이지로 옮겼습니다.</string>
+    <string name="home_dock_target_missing">이 항목의 위치가 바뀌었습니다. 독에서 다시 선택해 주세요.</string>
+    <string name="home_dock_swapped">독의 두 항목 위치를 바꿨습니다.</string>
+    <string name="home_dock_replaced">독을 바꿨습니다. 기존 항목은 홈에 보관했습니다.</string>
+    <string name="home_dock_full_choose_slot">교체할 독 항목 선택</string>
+    <string name="home_dock_select_replacement">이 자리에 둘 앱을 하나 선택하세요</string>
+    <string name="home_dock_replace_preserves_items">기존 항목은 홈으로 이동해요. 독에 있는 앱을 고르면 서로 위치를 바꿔요.</string>
+    <string name="home_folder_rename">폴더 이름 바꾸기</string>
+    <string name="home_folder_ungroup">폴더 해제 · 앱을 홈으로</string>
 </resources>
