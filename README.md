@@ -18,12 +18,12 @@ renders Duo Home's current views directly through Android's graphics pipeline.
    home wallpaper through Android's document picker, or restore Duo's default
    background. The selected photo is remembered without broad photo-library
    permission. Tap **완료** to finish editing.
-5. Swipe sideways between the three home pages. Long-press and drag an app to
-   move it; pause over another app to make a folder. Tap a folder to open it,
-   then use **편집** to rename or unpack it. The four-slot Dock stays visible
-   across pages. Long-press a widget to move it, choose a height preset, or
-   remove it.
-6. Long-press a Dock item, or tap it while editing, to open its management menu.
+5. Swipe sideways between the three home pages. A normal long press on an app
+   or folder opens its glass action menu. Choose **홈 화면 편집**, then long-press
+   and drag the item to move it; pause over another app to make a folder. Tap a
+   folder to open its glass panel, then use **편집** to rename or unpack it.
+   Long-press a widget to open its glass menu for page, size, and removal actions.
+6. Long-press a Dock item in normal mode, or tap it while editing, to open its glass menu.
    Use **다른 앱으로 교체**, **왼쪽으로 이동**, **오른쪽으로 이동**, or
    **독에서 빼기 · 현재 홈으로**. All four occupied slots can still be replaced.
    Replacing an item preserves it on a home page; choosing another Dock app
@@ -51,7 +51,9 @@ physical hinge → filtered angle → per-frame transition
   supplies the current view and child contents, so clock and widget updates can
   remain visible while folding. There is no app-managed bitmap capture, readback,
   idle capture timer, or mipmap worker in the home rendering path.
-- The 0.6.2 renderer retains `DuoFoldModel`'s direct physical-angle mapping: the cover
+- Version 0.6.3 retains the 0.6.2 fold renderer; this update changes launcher
+  menus and interaction, without changing AGSL or the fold animation model.
+  `DuoFoldModel` maps the physical hinge angle directly: the cover
   bends by that angle, and the inner pane bends by 180 degrees minus that
   angle. Display handoff estimates and opening/closing direction do not remap
   the optical pose. Projection alone is capped at 87.3 degrees to avoid collapse
@@ -84,6 +86,16 @@ wallpaper-aligned backdrop beneath crisp icons and text, with translucent tint
 and a light rim. Small controls use a matching tint and rim. The setup screen
 keeps solid, readable cards and capsule actions.
 
+In 0.6.3, `GlassActionOverlay` gives app shortcuts, Dock editing, folders,
+widget settings, app-drawer actions, and wallpaper actions the same glass menu
+style. Menus open near the selected item when space permits, with icons,
+separators, a close button, and scrolling for longer content. Dock ordering
+appears as left/right controls, and the full-Dock replacement picker shows its
+four slots. Folder contents and renaming also use the glass panel.
+
+Android's default-home selection, widget picker and permission/configuration
+screens, photo document picker, and app-info screen remain system/provider UI.
+
 The material treatment is inspired by Apple's
 [Materials guidelines](https://developer.apple.com/design/human-interface-guidelines/materials).
 This is an Android implementation of an iPhone-inspired appearance; it does not
@@ -107,9 +119,9 @@ The panels reuse the launcher's wallpaper source without capturing the screen.
   widget updates during folding, and frame pacing need evaluation on a Fold
   device; removing bitmap capture does not establish a performance improvement.
 - Version 0.6.0 passed 56 JVM tests and 32 desktop shader pixel states. Those are
-  historical results for the previous model; 0.6.1 subsequently built an APK.
-  Tests have not been run for the 0.6.2 frost, sensor-settling, and Dock changes.
-  Android GPU tests and physical-device
+  historical results; versions 0.6.1 and 0.6.2 subsequently built APKs. Version
+  0.6.3 also compiled and packaged successfully. Tests and device interaction checks have
+  not been run for its glass menus and input changes. Android GPU tests and physical-device
   fidelity remain unverified; no ADB device or emulator was available in the
   earlier checks. See [`docs/blur-validation.md`](docs/blur-validation.md).
 

@@ -26,16 +26,17 @@ persisted grant for the chosen URI; decoding is bounded and performed off the
 UI thread. The user can restore the default background. This requires access
 only to the selected document, with no broad storage permission.
 
-Long-pressing a home-grid app starts a drag. A short drop reorders it; pausing over an app
-creates a folder or adds the app to an existing folder. Folder dialogs use an
-icon grid and support opening, extracting, removing, renaming, or ungrouping
-apps. The four-slot Dock is shared across pages and accepts apps from the app
+In normal home mode, long-pressing an app or folder opens its glass action menu.
+After entering home edit mode, a long press starts dragging. A short drop
+reorders the item; pausing over an app creates a folder or adds it to an existing
+folder. Folder glass panels use an icon grid and support opening, extracting,
+removing, renaming, or ungrouping apps. The four-slot Dock is shared across pages and accepts apps from the app
 drawer or by drag-and-drop. Widgets can be moved between pages, removed, and
 given a height preset. The launcher passes the chosen dimensions to the widget
 provider and sizes its host frame to match; individual providers can still
 choose how to respond to those options.
 
-In 0.6.2, Dock items expose a management menu on a normal long press or an
+Dock items expose a glass management menu on a normal long press or an
 edit-mode tap. The menu supports app replacement, one-position left/right
 ordering, and moving an entry to a home page. A full Dock offers a target-slot
 picker when another app is added. Replacement keeps the displaced entry: it
@@ -43,7 +44,9 @@ takes the incoming pinned app's previous location, or goes to the current home
 page if the incoming app was not pinned. Choosing another Dock app swaps the
 two slots. Folder entries preserve their contents when moved or displaced and
 also offer rename and ungroup actions. These edits persist in the existing
-shortcut/folder preferences.
+shortcut/folder preferences. In 0.6.3, left/right ordering uses two compact
+controls within the panel, and the full-Dock replacement picker displays the
+slot choices with icons.
 
 The interaction model takes cues from the separate workspace, drag-and-drop,
 folder, app-drawer, and widget areas in [AOSP Launcher3](https://android.googlesource.com/platform/packages/apps/Launcher3/+/f6ba9499de/src/com/android/launcher3/).
@@ -58,6 +61,27 @@ while foreground icons and text are drawn sharply. Tint and a subtle rim define
 the panel boundary; smaller controls use a matching rim and tint treatment.
 This does not sample or capture other apps or the screen, and it does not blur
 arbitrary sibling launcher views behind the panel.
+
+Version 0.6.3 introduces `GlassActionOverlay` for launcher-owned menus and compact
+panels: shortcut actions, Dock management, folder contents and renaming, widget
+size/page/removal actions, app-drawer item actions, and wallpaper actions.
+Each overlay is attached to `homeContent`, reuses `LiquidGlassPanel`, and offers
+icon-labelled actions with separators, a dismissing scrim, and an explicit close
+control. Placement follows an available item anchor; unanchored content uses a
+compact panel centered horizontally above the bottom safe area. The panel's scroll area is bounded by system bars,
+display cutouts, and the keyboard.
+
+`HomeActivity` tracks open panels in a menu stack. Back dismisses the top panel;
+Home and activity teardown dismiss the stack and cancel queued menu actions.
+Viewport changes reflow the open panel while retaining its content. A selected action runs after its panel closes,
+avoiding overlap when it opens another panel or the app drawer. The overlay
+saves surrounding views' accessibility importance, hides those siblings while
+open, and restores their values and eligible focus when dismissed. These
+behaviors are implemented but have not been verified on a device.
+
+The system default-home picker, widget picker/binding/configuration screens,
+document picker, and app-info screen stay under Android or provider control.
+They are not replaced by `GlassActionOverlay`.
 
 The setup screen uses readable solid cards, an adaptive Duo app icon, mint
 accents, and capsule ripple buttons. Its content respects system bar and cutout
@@ -76,7 +100,8 @@ current `RenderNode` contents, including ordinary child views, as the shader
 input. Launcher redraws and widget updates can therefore reach the folded pane
 without waiting for an app-managed snapshot refresh.
 
-The 0.6.2 live renderer uses `DuoFoldModel`, independently of the legacy
+Version 0.6.3 retains the 0.6.2 AGSL and fold animation implementation; its new
+menus use the existing live view tree. The renderer uses `DuoFoldModel`, independently of the legacy
 `TransitionTuning` snapshot model. Given hinge angle `h`, cover bend is `h` and
 inner bend is `180 - h`. Neither a learned display-switch angle nor a change of
 opening/closing direction changes this mapping. `LiveFoldGeometry` shares the
@@ -191,9 +216,10 @@ display geometry → view reflow + display classification (independent of optica
 ## Device validation still required
 
 The previous 0.6.0 implementation passed 56 JVM tests and 32 desktop Skia pixel
-states across four rotations. Version 0.6.1 later completed an APK build. These
-are historical results; tests have not been run for the 0.6.2 frost,
-sensor-settling, and Dock changes. Desktop checks cannot
+states across four rotations. Versions 0.6.1 and 0.6.2 later completed APK builds.
+These are historical results. Version 0.6.3 also compiled and packaged successfully; tests and device
+interaction checks have not been run for its glass menus and input behavior.
+Desktop checks cannot
 execute Android's `RenderEffect` graph, validate glass-panel appearance, or
 measure device performance. Android GPU instrumentation remains unrun; no ADB
 device or emulator was available during the earlier checks.

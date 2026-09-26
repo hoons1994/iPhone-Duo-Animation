@@ -1,7 +1,6 @@
 package com.hoons1994.iphoneduoanimation
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.app.ActivityOptions
 import android.appwidget.AppWidgetHost
 import android.appwidget.AppWidgetHostView
@@ -49,7 +48,6 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.ImageButton
 import android.widget.LinearLayout
-import android.widget.PopupMenu
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -96,7 +94,8 @@ class HomeActivity : Activity() {
     private var previousCoverSurface: Boolean? = null
     private var widgetListening = false
     private var pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
-    private var activeDialog: AlertDialog? = null
+    private val menuStack = ArrayList<GlassActionOverlay>()
+    private val activeMenu get() = menuStack.lastOrNull()
     private var widgetFlowPending = false
     private var pendingWidgetPage = 0
     private var currentPage = 0
@@ -199,7 +198,7 @@ class HomeActivity : Activity() {
         super.onNewIntent(intent)
         setIntent(intent)
         if (intent.hasCategory(Intent.CATEGORY_HOME)) {
-            activeDialog?.dismiss()
+            dismissAllGlassMenus()
             closeAppDrawer(animate = false)
             setEditingHome(false)
             switchPage(0)
@@ -208,6 +207,7 @@ class HomeActivity : Activity() {
 
     private fun handleHomeBack() {
         when {
+            activeMenu != null -> dismissGlassMenu()
             appDrawer != null -> closeAppDrawer()
             isEditingHome -> setEditingHome(false)
             currentPage != 0 -> switchPage(0)
@@ -216,6 +216,7 @@ class HomeActivity : Activity() {
 
     override fun onStop() {
         homeStarted = false
+        dismissAllGlassMenus()
         stopClock()
         hingeMonitor.stop()
         homeContent.setRenderingActive(false)
@@ -228,6 +229,7 @@ class HomeActivity : Activity() {
 
     override fun onDestroy() {
         stopClock()
+        dismissAllGlassMenus()
         homeReflowListener?.let { listener ->
             homeContent.viewTreeObserver.takeIf { it.isAlive }?.removeOnPreDrawListener(listener)
         }
@@ -751,6 +753,7 @@ class HomeActivity : Activity() {
         if (!isFolder && info == null) return null
 
         val cell = LinearLayout(this).apply {
+            tag = shortcut.component
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(if (dock) 0 else dp(4), if (dock) 0 else dp(4), if (dock) 0 else dp(4), if (dock) 0 else dp(4))
@@ -762,7 +765,7 @@ class HomeActivity : Activity() {
             contentDescription = if (isFolder) folder?.title ?: "폴더" else info?.loadLabel(packageManager)?.toString()
             setOnClickListener {
                 if (isEditingHome) {
-                    showShortcutActions(shortcut.component)
+                    showShortcutActions(shortcut.component, this)
                 } else if (isFolder) {
                     showFolderContents(folderId(shortcut.component))
                 } else {
@@ -770,12 +773,9 @@ class HomeActivity : Activity() {
                 }
             }
             setOnLongClickListener {
-                if (dock && !isEditingHome) {
-                    showDockActions(shortcut.component)
-                    return@setOnLongClickListener true
-                }
                 if (!isEditingHome) {
-                    setEditingHome(true, redraw = false)
+                    showShortcutActions(shortcut.component, this)
+                    return@setOnLongClickListener true
                 }
                 val clip = ClipData.newPlainText("launcher-shortcut", shortcut.component)
                 startDragAndDrop(clip, View.DragShadowBuilder(this), ShortcutDrag(shortcut.component), 0)
@@ -1024,10 +1024,16 @@ class HomeActivity : Activity() {
             setPadding(dp(8), dp(4), dp(8), dp(4))
         }
         val grid = GridView(this).apply {
-            numColumns = if (resources.configuration.screenWidthDp >= 700) 4 else 3
+            numColumns = 3
             horizontalSpacing = dp(4)
             verticalSpacing = dp(8)
             stretchMode = GridView.STRETCH_COLUMN_WIDTH
+            addOnLayoutChangeListener { _, left, _, right, _, oldLeft, _, oldRight, _ ->
+                if (right - left != oldRight - oldLeft) {
+                    val columns = if (right - left >= dp(360)) 4 else 3
+                    if (numColumns != columns) numColumns = columns
+                }
+            }
         }
         grid.adapter = LauncherActivityAdapter(available)
         val gridHeight = (resources.configuration.screenHeightDp / 2).coerceIn(220, 360)
@@ -1041,39 +1047,29 @@ class HomeActivity : Activity() {
         gridFrame.addView(emptyMessage, FrameLayout.LayoutParams(-1, -1))
         grid.emptyView = emptyMessage
         content.addView(gridFrame, LinearLayout.LayoutParams(-1, dp(gridHeight)))
-        val builder = AlertDialog.Builder(this)
-            .setTitle(folder.title)
-            .setView(content)
-            .setNegativeButton("닫기", null)
-            .setNeutralButton("편집") { dialog, _ ->
-                dialog.dismiss()
-                showFolderActions(id)
-            }
-        val dialog = builder.create()
         grid.setOnItemClickListener { _, view, position, _ ->
             val item = available.getOrNull(position) ?: return@setOnItemClickListener
             launchApplication(ComponentName(item.activityInfo.packageName, item.activityInfo.name), view)
-            dialog.dismiss()
+            dismissAllGlassMenus()
         }
         grid.setOnItemLongClickListener { _, view, position, _ ->
             val item = available.getOrNull(position) ?: return@setOnItemLongClickListener true
             val component = ComponentName(item.activityInfo.packageName, item.activityInfo.name)
-            PopupMenu(this, view).apply {
-                menu.add("홈 화면에 꺼내기").setOnMenuItemClickListener {
-                    dialog.dismiss()
-                    removeAppFromFolder(id, component, placeOnHome = true)
-                    true
-                }
-                menu.add("폴더에서 제거").setOnMenuItemClickListener {
-                    dialog.dismiss()
-                    removeAppFromFolder(id, component, placeOnHome = false)
-                    true
-                }
-                show()
-            }
+            showGlassMenu(item.loadLabel(packageManager).toString(), anchor = view,
+                icon = AppIconDrawable(item.loadIcon(packageManager)), replaceCurrent = false,
+                actions = listOf(
+                    GlassAction(getString(R.string.home_extract_from_folder), "home") {
+                        dismissAllGlassMenus()
+                        removeAppFromFolder(id, component, placeOnHome = true)
+                    },
+                    GlassAction(getString(R.string.home_remove_from_folder), "trash", destructive = true) {
+                        dismissAllGlassMenus()
+                        removeAppFromFolder(id, component, placeOnHome = false)
+                    }))
             true
         }
-        showManagedDialog(dialog)
+        showGlassMenu(folder.title, icon = shortcutIcon(folderComponent(id)), content = content, actions = listOf(
+            GlassAction(getString(R.string.home_edit), "edit") { showFolderActions(id) }))
     }
 
     private fun removeAppFromFolder(id: String, component: ComponentName, placeOnHome: Boolean) {
@@ -1096,39 +1092,54 @@ class HomeActivity : Activity() {
         renderShortcuts()
     }
 
-    private fun showFolderActions(id: String) {
+    private fun showFolderActions(id: String, anchor: View? = null) {
         val component = folderComponent(id)
         if (pinnedShortcuts().any { it.component == component && it.page == DOCK_PAGE }) {
-            showDockActions(component)
+            showDockActions(component, anchor)
             return
         }
         val folder = homeFolder(id) ?: return
-        showManagedDialog(AlertDialog.Builder(this)
-            .setTitle(folder.title)
-            .setItems(arrayOf("이름 바꾸기", "폴더 해제", "취소")) { dialog, index ->
-                dialog.dismiss()
-                when (index) {
-                    0 -> showRenameFolder(folder)
-                    1 -> ungroupFolder(folder)
-                }
-            })
+        showGlassMenu(folder.title, icon = shortcutIcon(component),
+            anchor = anchor ?: shortcutAnchor(component), actions = listOf(
+            GlassAction(getString(R.string.home_folder_rename), "edit") { showRenameFolder(folder) },
+            GlassAction(getString(R.string.home_edit_layout), "grid") { setEditingHome(true) },
+            GlassAction(getString(R.string.home_folder_ungroup), "folder") { ungroupFolder(folder) }))
     }
 
     private fun showRenameFolder(folder: HomeFolder) {
         val input = EditText(this).apply {
             setText(folder.title)
             setSelection(text.length)
-            hint = "폴더 이름"
+            hint = getString(R.string.home_folder_name)
             isSingleLine = true
+            textSize = 17f
+            setTextColor(Color.WHITE)
+            setHintTextColor(0x99ffffff.toInt())
+            background = glassBackground(0x18ffffff, 18)
+            setPadding(dp(16), dp(10), dp(16), dp(10))
+            imeOptions = EditorInfo.IME_ACTION_DONE
+            layoutParams = LinearLayout.LayoutParams(-1, dp(56))
         }
-        showManagedDialog(AlertDialog.Builder(this)
-            .setTitle("폴더 이름 바꾸기")
-            .setView(input)
-            .setNegativeButton("취소", null)
-            .setPositiveButton("저장") { _, _ ->
-                saveHomeFolder(folder.copy(title = input.text.toString()))
+        val save: () -> Unit = {
+            homeFolder(folder.id)?.let { current ->
+                saveHomeFolder(current.copy(title = input.text.toString()))
                 renderShortcuts()
-            })
+            }
+        }
+        val menu = showGlassMenu(getString(R.string.home_folder_rename), content = input,
+            actions = listOf(GlassAction(getString(R.string.home_save), "check", onClick = save)))
+        input.setOnEditorActionListener { _, action, _ ->
+            if (action == EditorInfo.IME_ACTION_DONE) {
+                menu?.dismiss(afterDismiss = save)
+                true
+            } else false
+        }
+        input.post {
+            if (activeMenu === menu && menu != null && input.isAttachedToWindow) {
+                input.requestFocus()
+                getSystemService(InputMethodManager::class.java)?.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+            }
+        }
     }
 
     private fun ungroupFolder(folder: HomeFolder) {
@@ -1157,80 +1168,103 @@ class HomeActivity : Activity() {
         return if (nextPage >= 0) nextPage else entries.size
     }
 
-    private fun showShortcutActions(component: String) {
+    private fun showShortcutActions(component: String, anchor: View? = null) {
         val shortcut = pinnedShortcuts().firstOrNull { it.component == component } ?: return
         if (shortcut.page == DOCK_PAGE) {
-            showDockActions(component)
+            showDockActions(component, anchor)
             return
         }
         if (isFolderComponent(component)) {
-            showFolderActions(folderId(component))
+            showFolderActions(folderId(component), anchor)
             return
         }
-        val actions = ArrayList<Pair<String, () -> Unit>>()
+        val actions = ArrayList<GlassAction>()
+        actions += GlassAction(getString(R.string.home_edit_layout), "grid") { setEditingHome(true) }
         ComponentName.unflattenFromString(component)?.let { target ->
-            actions += getString(R.string.home_add_dock) to { addAppToDock(target) }
+            actions += GlassAction(getString(R.string.home_add_dock), "plus") { addAppToDock(target) }
         }
-        for (page in 0 until HOME_PAGE_COUNT) {
-            if (shortcut?.page == page) continue
-            actions += "${page + 1}페이지로 이동" to {
-                val entries = pinnedShortcuts().map {
-                    if (it.component == component) it.copy(page = page) else it
+        actions += GlassAction(getString(R.string.home_move_to_page), "pages") {
+            showGlassMenu(getString(R.string.home_move_to_page), actions = (0 until HOME_PAGE_COUNT)
+                .filter { it != shortcut.page }.map { page ->
+                    GlassAction(getString(R.string.home_page_number, page + 1), "home") {
+                        savePinnedShortcuts(pinnedShortcuts().map {
+                            if (it.component == component) it.copy(page = page) else it
+                        })
+                        renderShortcuts()
+                    }
                 }
-                savePinnedShortcuts(entries)
-                renderShortcuts()
-            }
+            )
         }
-        actions += "홈 화면에서 삭제" to {
+        actions += GlassAction(getString(R.string.home_remove_shortcut), "trash", destructive = true) {
             savePinnedShortcuts(pinnedShortcuts().filterNot { it.component == component })
             renderShortcuts()
         }
-        actions += "취소" to {}
-        showManagedDialog(AlertDialog.Builder(this)
-            .setItems(actions.map { it.first }.toTypedArray()) { dialog, which ->
-                dialog.dismiss()
-                actions.getOrNull(which)?.second?.invoke()
-            })
+        showGlassMenu(shortcutLabel(component), icon = shortcutIcon(component),
+            anchor = anchor ?: shortcutAnchor(component), actions = actions)
     }
 
-    private fun showDockActions(component: String) {
+    private fun showDockActions(component: String, anchor: View? = null) {
         val dock = pinnedShortcuts().filter { it.page == DOCK_PAGE }
         val index = dock.indexOfFirst { it.component == component }
         if (index < 0) return
-        val actions = ArrayList<Pair<String, () -> Unit>>()
-        actions += getString(R.string.home_dock_replace) to {
+        val quickOrder = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            for ((direction, label) in listOf(-1 to R.string.home_dock_move_left, 1 to R.string.home_dock_move_right)) {
+                addView(actionButton(getString(label)) {
+                    activeMenu?.dismiss(afterDismiss = { reorderDock(component, direction) })
+                }.apply {
+                    isEnabled = index + direction in dock.indices
+                    alpha = if (isEnabled) 1f else 0.32f
+                    textSize = 13f
+                    minWidth = 0
+                }, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                    marginStart = if (direction > 0) dp(4) else 0
+                    marginEnd = if (direction < 0) dp(4) else 0
+                })
+            }
+        }
+        val actions = ArrayList<GlassAction>()
+        actions += GlassAction(getString(R.string.home_dock_replace), "replace") {
             showAppBrowser(pinOnSelect = true, pinToDock = true, replaceDockComponent = component)
         }
-        if (index > 0) actions += getString(R.string.home_dock_move_left) to { reorderDock(component, -1) }
-        if (index < dock.lastIndex) actions += getString(R.string.home_dock_move_right) to { reorderDock(component, 1) }
-        actions += getString(R.string.home_dock_remove_to_home) to { moveDockItemToHome(component, currentPage) }
-        for (page in 0 until HOME_PAGE_COUNT) {
-            if (page != currentPage) {
-                actions += getString(R.string.home_dock_move_page, page + 1) to { moveDockItemToHome(component, page) }
-            }
+        actions += GlassAction(getString(R.string.home_dock_remove_to_home), "home") {
+            moveDockItemToHome(component, currentPage)
+        }
+        actions += GlassAction(getString(R.string.home_move_to_page), "pages") {
+            showGlassMenu(getString(R.string.home_move_to_page), actions = (0 until HOME_PAGE_COUNT).map { page ->
+                GlassAction(getString(R.string.home_page_number, page + 1), "home") {
+                    moveDockItemToHome(component, page)
+                }
+            })
         }
         if (isFolderComponent(component)) {
             homeFolder(folderId(component))?.let { folder ->
-                actions += getString(R.string.home_folder_rename) to { showRenameFolder(folder) }
-                actions += getString(R.string.home_folder_ungroup) to { ungroupFolder(folder) }
+                actions += GlassAction(getString(R.string.home_folder_rename), "edit") { showRenameFolder(folder) }
+                actions += GlassAction(getString(R.string.home_folder_ungroup), "folder") { ungroupFolder(folder) }
             }
         } else {
             ComponentName.unflattenFromString(component)?.let { app ->
-                actions += getString(R.string.home_app_info) to {
+                actions += GlassAction(getString(R.string.home_app_info), "info") {
                     runCatching { startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                         android.net.Uri.parse("package:${app.packageName}"))) }
                 }
             }
         }
-        showManagedDialog(AlertDialog.Builder(this)
-            .setTitle(getString(R.string.home_dock_item_title, index + 1, shortcutLabel(component)))
-            .setItems(actions.map { it.first }.toTypedArray()) { dialog, which ->
-                // Dismiss first: a replacement drawer or folder-name dialog
-                // must not be blocked by the existing modal's duplicate guard.
-                dialog.dismiss()
-                actions.getOrNull(which)?.second?.invoke()
-            }
-            .setNegativeButton(R.string.home_close, null))
+        showGlassMenu(shortcutLabel(component), icon = shortcutIcon(component), content = quickOrder,
+            anchor = anchor ?: shortcutAnchor(component), actions = actions)
+    }
+
+    private fun shortcutAnchor(component: String): View? = homeContent.findViewWithTag(component)
+
+    private fun shortcutIcon(component: String): Drawable? {
+        if (isFolderComponent(component)) {
+            return android.graphics.drawable.LayerDrawable(arrayOf(
+                roundedBackground(0xcc343d51.toInt(), dp(12).toFloat()),
+                android.graphics.drawable.InsetDrawable(HomeGlyph("folder"), dp(9)),
+            ))
+        }
+        val name = ComponentName.unflattenFromString(component) ?: return null
+        return runCatching { AppIconDrawable(packageManager.getActivityIcon(name)) }.getOrNull()
     }
 
     private fun shortcutLabel(component: String): String {
@@ -1299,20 +1333,43 @@ class HomeActivity : Activity() {
     private fun showDockReplacementTargets(incoming: ComponentName) {
         val dock = pinnedShortcuts().filter { it.page == DOCK_PAGE }
         if (dock.isEmpty()) return
-        showManagedDialog(AlertDialog.Builder(this)
-            .setTitle(R.string.home_dock_full_choose_slot)
-            .setItems(dock.mapIndexed { index, shortcut ->
-                getString(R.string.home_dock_item_title, index + 1, shortcutLabel(shortcut.component))
-            }.toTypedArray()) { dialog, which ->
-                dialog.dismiss()
-                dock.getOrNull(which)?.let { replaceDockItem(it.component, incoming) }
+        val slots = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        dock.forEachIndexed { index, shortcut ->
+            val name = shortcutLabel(shortcut.component)
+            val tile = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(dp(3), dp(14), dp(3), dp(12))
+                background = glassBackground(0x18ffffff, 20)
+                isFocusable = true
+                contentDescription = getString(R.string.home_dock_item_title, index + 1, name)
+                addView(ImageView(this@HomeActivity).apply {
+                    setImageDrawable(shortcutIcon(shortcut.component) ?: getDrawable(R.mipmap.ic_launcher))
+                }, LinearLayout.LayoutParams(dp(42), dp(42)))
+                addView(TextView(this@HomeActivity).apply {
+                    text = name
+                    textSize = 11f
+                    maxLines = 2
+                    gravity = Gravity.CENTER
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setTextColor(Color.WHITE)
+                    setPadding(0, dp(8), 0, 0)
+                }, LinearLayout.LayoutParams(-1, dp(42)))
+                setOnClickListener {
+                    activeMenu?.dismiss(afterDismiss = { replaceDockItem(shortcut.component, incoming) })
+                }
             }
-            .setNegativeButton(R.string.home_close, null))
+            slots.addView(tile, LinearLayout.LayoutParams(0, -2, 1f).apply {
+                marginStart = if (index == 0) 0 else dp(4)
+            })
+        }
+        showGlassMenu(getString(R.string.home_dock_full_choose_slot),
+            subtitle = getString(R.string.home_dock_replace_preserves_items), content = slots, actions = emptyList())
     }
 
     private fun showAppBrowser(pinOnSelect: Boolean, pinToDock: Boolean = false,
         replaceDockComponent: String? = null) {
-        if (appDrawer != null || activeDialog?.isShowing == true || widgetFlowPending) return
+        if (appDrawer != null || activeMenu != null || widgetFlowPending) return
         drawerClosing = false
         val apps = launcherActivities()
         val adapter = LauncherActivityAdapter(apps)
@@ -1475,29 +1532,26 @@ class HomeActivity : Activity() {
         grid.setOnItemLongClickListener { _, view, position, _ ->
             val item = adapter.getItem(position)
             val component = ComponentName(item.activityInfo.packageName, item.activityInfo.name)
-            PopupMenu(this, view).apply {
-                menu.add(getString(R.string.home_add_app)).setOnMenuItemClickListener {
+            showGlassMenu(item.loadLabel(packageManager).toString(), anchor = view,
+                icon = AppIconDrawable(item.loadIcon(packageManager)), actions = listOf(
+                GlassAction(getString(R.string.home_add_app), "home") {
                     addAppToHome(component)
                     adapter.notifyDataSetChanged()
-                    true
-                }
-                menu.add(getString(R.string.home_add_dock)).setOnMenuItemClickListener {
+                },
+                GlassAction(getString(R.string.home_add_dock), "plus") {
                     addAppToDock(component)
                     adapter.notifyDataSetChanged()
-                    true
-                }
-                menu.add(getString(R.string.home_app_info)).setOnMenuItemClickListener {
+                },
+                GlassAction(getString(R.string.home_app_info), "info") {
                     runCatching { startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                         android.net.Uri.parse("package:${component.packageName}"))) }
-                    true
-                }
-                show()
-            }
+                }))
             true
         }
     }
 
     private fun closeAppDrawer(animate: Boolean = true) {
+        dismissAllGlassMenus()
         val overlay = appDrawer ?: return
         if (drawerClosing && animate) return
         drawerClosing = true
@@ -1617,17 +1671,33 @@ class HomeActivity : Activity() {
         .distinctBy { "${it.activityInfo.packageName}/${it.activityInfo.name}" }
         .sortedBy { it.loadLabel(packageManager).toString().lowercase() }
 
-    private fun showManagedDialog(builder: AlertDialog.Builder) {
-        showManagedDialog(builder.create())
+    private fun showGlassMenu(
+        title: String,
+        actions: List<GlassAction>,
+        subtitle: String? = null,
+        icon: Drawable? = null,
+        anchor: View? = null,
+        content: View? = null,
+        replaceCurrent: Boolean = true,
+    ): GlassActionOverlay? {
+        if (!homeStarted || isDestroyed || widgetFlowPending) return null
+        if (replaceCurrent) dismissAllGlassMenus()
+        lateinit var menu: GlassActionOverlay
+        menu = GlassActionOverlay(this, wallpaperView, title, subtitle, icon, actions,
+            anchor = anchor, content = content, onDismiss = { menuStack.remove(menu) })
+        menuStack.add(menu)
+        menu.showIn(homeContent)
+        return menu
     }
 
-    private fun showManagedDialog(dialog: AlertDialog) {
-        if (activeDialog?.isShowing == true) return
-        activeDialog = dialog
-        dialog.setOnDismissListener {
-            if (activeDialog === dialog) activeDialog = null
-        }
-        dialog.show()
+    private fun dismissGlassMenu(animate: Boolean = true) {
+        activeMenu?.dismiss(animate)
+    }
+
+    private fun dismissAllGlassMenus() {
+        // Top-down removal restores each underlying layer's accessibility state
+        // before that layer is removed. Callbacks only remove their own entry.
+        menuStack.toList().asReversed().forEach { it.dismiss(animate = false) }
     }
     private fun pickWidget() {
         if (widgetFlowPending || pendingWidgetId != AppWidgetManager.INVALID_APPWIDGET_ID) return
@@ -1771,42 +1841,35 @@ class HomeActivity : Activity() {
     }
 
     private fun showWidgetActions(placement: WidgetPlacement, heightDp: Int) {
-        val actions = ArrayList<Pair<String, () -> Unit>>()
-        for (page in 0 until HOME_PAGE_COUNT) {
-            if (page == placement.page) continue
-            actions += "${page + 1}페이지로 이동" to {
-                saveWidgetPlacements(widgetPlacements().map {
-                    if (it.id == placement.id) it.copy(page = page) else it
+        showGlassMenu(getString(R.string.home_widget_settings), actions = listOf(
+            GlassAction(getString(R.string.home_widget_resize), "size") {
+                val sizes = listOf(120 to R.string.home_size_small, 200 to R.string.home_size_medium,
+                    300 to R.string.home_size_large, 420 to R.string.home_size_extra_large)
+                showGlassMenu(getString(R.string.home_widget_resize), actions = sizes.map { (preset, label) ->
+                    GlassAction(getString(label), if (heightDp == preset) "check" else "size") {
+                        saveWidgetPlacements(widgetPlacements().map {
+                            if (it.id == placement.id) it.copy(heightDp = preset) else it
+                        })
+                        renderWidgets()
+                    }
                 })
+            },
+            GlassAction(getString(R.string.home_move_to_page), "pages") {
+                showGlassMenu(getString(R.string.home_move_to_page), actions = (0 until HOME_PAGE_COUNT)
+                    .filter { it != placement.page }.map { page ->
+                        GlassAction(getString(R.string.home_page_number, page + 1), "home") {
+                            saveWidgetPlacements(widgetPlacements().map {
+                                if (it.id == placement.id) it.copy(page = page) else it
+                            })
+                            renderWidgets()
+                        }
+                    })
+            },
+            GlassAction(getString(R.string.home_remove_widget), "trash", destructive = true) {
+                saveWidgetPlacements(widgetPlacements().filterNot { it.id == placement.id })
+                runCatching { widgetHost.deleteAppWidgetId(placement.id) }
                 renderWidgets()
-            }
-        }
-        listOf(120, 200, 300, 420).forEach { preset ->
-            val label = when (preset) {
-                120 -> "작게"
-                200 -> "보통"
-                300 -> "크게"
-                else -> "아주 크게"
-            }
-            actions += "크기 조절: $label" to {
-                saveWidgetPlacements(widgetPlacements().map {
-                    if (it.id == placement.id) it.copy(heightDp = preset) else it
-                })
-                renderWidgets()
-            }
-        }
-        actions += "삭제" to {
-            saveWidgetPlacements(widgetPlacements().filterNot { it.id == placement.id })
-            runCatching { widgetHost.deleteAppWidgetId(placement.id) }
-            renderWidgets()
-        }
-        actions += "취소" to {}
-        showManagedDialog(AlertDialog.Builder(this)
-            .setTitle("위젯 설정")
-            .setItems(actions.map { it.first }.toTypedArray()) { dialog, which ->
-                actions.getOrNull(which)?.second?.invoke()
-                dialog.dismiss()
-            })
+            }))
     }
 
     private fun startClock() {
@@ -1830,12 +1893,8 @@ class HomeActivity : Activity() {
     }
 
     private fun showWallpaperActions() {
-        showManagedDialog(AlertDialog.Builder(this)
-            .setTitle(R.string.home_wallpaper_title)
-            .setItems(arrayOf(getString(R.string.home_wallpaper_choose_photo),
-                getString(R.string.home_wallpaper_restore_default))) { dialog, index ->
-                dialog.dismiss()
-                if (index == 0) {
+        showGlassMenu(getString(R.string.home_wallpaper_title), actions = listOf(
+            GlassAction(getString(R.string.home_wallpaper_choose_photo), "image") {
                     val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                         addCategory(Intent.CATEGORY_OPENABLE)
                         type = "image/*"
@@ -1843,7 +1902,8 @@ class HomeActivity : Activity() {
                     }
                     runCatching { startActivityForResult(intent, REQUEST_PICK_WALLPAPER) }
                         .onFailure { Toast.makeText(this, R.string.home_wallpaper_unavailable, Toast.LENGTH_SHORT).show() }
-                } else {
+            },
+            GlassAction(getString(R.string.home_wallpaper_restore_default), "restore") {
                     val previous = preferences.getString(KEY_WALLPAPER_URI, null)
                     val pending = pendingWallpaperUri?.toString()
                     preferences.edit().remove(KEY_WALLPAPER_URI).apply()
@@ -1855,8 +1915,7 @@ class HomeActivity : Activity() {
                     refreshGlassPanels()
                     releaseWallpaperPermission(previous)
                     if (pending != previous) releaseWallpaperPermission(pending)
-                }
-            })
+            }))
     }
 
     /** Decode off the UI thread and cap the decoded pixel count, even for panoramic source photos. */
@@ -2101,6 +2160,16 @@ class HomeActivity : Activity() {
                 }
                 "check" -> {
                     val path = Path().apply { moveTo(5f, 12f); lineTo(10f, 17f); lineTo(20f, 6f) }
+                    canvas.drawPath(path, paint)
+                }
+                "folder" -> {
+                    val path = Path().apply {
+                        moveTo(3f, 6f); quadTo(3f, 4f, 5f, 4f)
+                        lineTo(9f, 4f); lineTo(12f, 7f); lineTo(19f, 7f)
+                        quadTo(21f, 7f, 21f, 9f); lineTo(21f, 18f)
+                        quadTo(21f, 20f, 19f, 20f); lineTo(5f, 20f)
+                        quadTo(3f, 20f, 3f, 18f); close()
+                    }
                     canvas.drawPath(path, paint)
                 }
                 else -> {

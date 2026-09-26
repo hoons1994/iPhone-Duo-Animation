@@ -1,6 +1,22 @@
 # Live blur architecture and historical regression evidence
 
-## Current 0.6.2 launcher renderer
+## Current 0.6.3 scope
+
+Version 0.6.3 (version code 10) changes launcher-owned menus and input behavior.
+`GlassActionOverlay` unifies shortcut, Dock, folder, widget, app-drawer, and
+wallpaper action panels inside the live home view tree. A normal shortcut long
+press opens a menu; a long press in home edit mode starts dragging. Android and
+widget-provider selection, permission, and configuration screens remain system
+UI. This revision does not change AGSL or the fold animation implementation.
+
+`:app:assembleDebug` completed successfully for 0.6.3 on 2026-09-26. This covers
+APK compilation and packaging. No tests or physical-device checks have been run for
+this revision. Existing shader diagnostics do not verify menu placement, keyboard
+insets, dismissal and follow-up actions, accessibility focus restoration, or
+normal/edit-mode input behavior. Android GPU execution and reference fidelity
+also remain unverified.
+
+## Fold renderer retained from 0.6.2
 
 `HomeActivity` now renders its current view tree through `LiveFoldLayout` and
 Android's `RenderEffect` input. `LiveFoldEffects` supplies four live levels:
@@ -63,13 +79,16 @@ The 0.6.2 Dock also has explicit management, replacement, ordering, and move-to-
 actions. Shader diagnostics do not exercise these interactions, their persisted
 layout, or preservation of displaced folders and shortcuts.
 
-Tests have not been run for the 0.6.2 frost, sensor-settling, and Dock changes. Neither reference
-fidelity nor Android GPU performance is verified for this revision.
+Tests were not run for the 0.6.2 frost, sensor-settling, and Dock changes. Neither
+reference fidelity nor Android GPU performance has been verified for that model.
+
+## Historical 0.6.2 build
 
 `:app:assembleDebug` completed successfully for 0.6.2 (version code 9) on
 2026-09-26. No ADB device was attached. This result covers APK compilation and
 packaging; the AGSL shader is compiled at runtime and device interaction,
-animation quality, and frame pacing remain unverified.
+animation quality, and frame pacing remain unverified. It predates the 0.6.3
+menu changes and is not a build result for the current revision.
 
 ## Historical 0.6.1 build
 
@@ -87,7 +106,7 @@ native Gaussian levels, and the production shader projects and weights each
 level. The checks cover opacity preservation, fixed-pane sharpness, moving-pane
 frost without mistaking black output for blur, and unchanged endpoint pixels.
 That run's diagnostics were written under `build/live-shader-report/`. Those
-32 passing states describe the earlier model and do not validate 0.6.2. The
+32 passing states describe the earlier model and do not validate the current renderer. The
 fixture has been updated for the new angle mapping, eye ratios, material motion,
 and native blur conversion, but it has not been run for this revision.
 
@@ -98,7 +117,7 @@ python tools/check_live_shader.py build/live-shader-report
 This requires `skia-python` and `numpy`. The check uses desktop Skia to supply
 input levels; it does not execute Android's `RenderEffect` graph, view
 invalidation, touch dispatch, or GPU frame timing. It also does not validate the
-separate `LiquidGlassPanel` backdrop and control appearance.
+separate `LiquidGlassPanel` backdrop, `GlassActionOverlay` menus, or control appearance.
 
 ## Android and geometry test scope
 
