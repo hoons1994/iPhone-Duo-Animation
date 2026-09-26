@@ -101,35 +101,52 @@ current `RenderNode` contents, including ordinary child views, as the shader
 input. Launcher redraws and widget updates can therefore reach the folded pane
 without waiting for an app-managed snapshot refresh.
 
-Version 0.6.5 refines the live blur levels while retaining the material radius,
-fold timing, projection geometry, sensors, and maximum outer-edge blur from 0.6.4.
-The renderer uses `DuoFoldModel`, independently of the legacy
-`TransitionTuning` snapshot model. Given hinge angle `h`, cover bend is `h` and
-inner bend is `180 - h`. Neither a learned display-switch angle nor a change of
-opening/closing direction changes this mapping. `LiveFoldGeometry` shares the
-resulting projection with touch hit testing. The eye is aligned with the hinge
-on both surfaces, including the cover's hinge-side edge. Eye distance scales
-with the active axis extent using ratios derived from the scene dimensions in
-[`iphone-duo/main.js`](https://github.com/chuspeeism/iphone-duo/blob/main/main.js),
-replacing the live renderer's earlier fixed millimeter calibration.
+Version 0.6.6 replaces the rigid, near-edge-on projection from 0.6.5 with a
+bounded optical tilt and a smooth strip beside the hinge. `DuoFoldModel` uses
+the active-range helpers in `TransitionTuning`; the legacy snapshot renderer
+remains separate. The Android mapping is informed by
+[`duo-open/DuoShader.kt`](https://github.com/marcoazeem/duo-open/blob/main/app/src/main/java/com/duoopen/fold/DuoShader.kt),
+with Duo Home's learned handoff and added cubic easing.
 
-Only the projection angle is capped at 87.3 degrees, corresponding to the
-`0.97 * 90` limit in
-[`ClassicGlassShader.kt`](https://github.com/joeconsorti/duo-fold-live/blob/main/app/src/main/java/org/duofold/live/ClassicGlassShader.kt).
-The material envelope still reaches one at a 90-degree bend. The shader
-computes `motion = smoothstep(0, 1, clamp(bend / 90, 0, 1))` and scales frost
-by `motion * pow(edge, 1.35)`, where `edge` is distance from the hinge normalized
-by moving-pane width. Darkening uses a similar outward envelope. Keeping these
-values in pane coordinates prevents the historical loss of frost when texture
-coordinates compress near edge-on projection. This follows the Classic Android
-adaptation; the browser study in `main.js` measures its gradient in projected
-`sourceUV` coordinates, so the two implementations are not identical.
+For physical hinge angle `h` and latched handoff angle `H` (98 degrees by
+default), the cover phase is `clamp((h - 6) / (H - 6), 0, 1)` and the inner
+phase is `clamp((172 - h) / (172 - H), 0, 1)`. Optical tilt is
+`45 * phase^2 * (3 - 2 * phase)` degrees. Thus the cover is clear at 6 degrees
+and reaches full tilt at handoff; the inner pane resolves from full tilt at
+handoff to clear at 172 degrees. This 45-degree range is an Android adaptation
+of the physical hinge range. It is not a cap imposed by the Swift
+`DuoLikeAnimation` implementation.
 
-The current radius is `maxBlurPx * motion * pow(edge, 1.35)`. The extra
-`max(1, 1 / J)` projection-magnification gain from 0.6.2/0.6.3 was removed in
-0.6.4. Source-space blur already expands through the projection; multiplying
-its radius again added excess near-hinge blur. That extra gain was a Duo Home
-adaptation and is absent from the inspected reference formulas.
+`LiveFoldGeometry` and `LiveFoldShader` share the curved projection used for
+rendering and touch hit testing. For moving-pane extent `L`, the hinge strip
+has width `F = max(1, L * 0.35 / 7.89935)`, about 4.43% of the pane. With
+distance `d` from the hinge and `u = clamp(d / F, 0, 1)`, the bent distance is
+`B = F * u^3 * (1 - 0.5 * u)` inside the strip and `B = d - F/2` beyond it.
+The projected glass distance is `d - (1 - cos(tilt)) * B`, and glass-to-interface
+gap is `B * sin(tilt)`. The strip joins position, slope, and curvature continuously.
+Its width takes inspiration from the flexible region in
+[`iphone-duo/main.js`](https://github.com/chuspeeism/iphone-duo/blob/main/main.js);
+this one-sided integral of a smoothstep tangent is not that model's Hermite
+mesh deformation.
+
+The eye lies on the display-center normal, including on the cover. Eye distance
+is `E = max(320 * pixelsPerMm, 2 * L)`, using the hinge-axis display DPI and
+a fallback of 6 pixels/mm. Rays run from that eye through the glass to the
+fixed interface plane. Frost follows the separation as
+`radius = min(maxBlurPx, 0.12 * gap)`. RGB attenuation is
+`max(1 - darkening * radius, 0)`, with `darkening = 0.015 * 6 / pixelsPerMm`.
+The existing source-space maximum stays `72 * axisExtent / referenceWidth`,
+where reference width is 774 for cover and 1600 for inner. This replaces the
+old `R * motion * edge^1.35` envelope; the extra projection gain removed in
+0.6.4 remains absent.
+
+The ray/gap model is informed by
+[`Atomicx7/duo_fold.agsl`](https://github.com/Atomicx7/Duo-animation/blob/master/app/src/main/res/raw/duo_fold.agsl)
+and the Swift port's
+[`DuoFold.metal`](https://github.com/elijah-semyonov/DuoLikeAnimation/blob/main/DuoLikeAnimation/Shaders/DuoFold.metal)
+and [`FoldEffect.swift`](https://github.com/elijah-semyonov/DuoLikeAnimation/blob/main/DuoLikeAnimation/FoldEffect.swift).
+Their sample patterns, physical scaling, and sensor inputs differ from this
+launcher implementation; these references do not establish visual equivalence.
 
 `DuoFoldModel.blurLevels()` supplies up to six source-space levels. With maximum
 radius `R`, it defines `coarse = R/9` and `fine = min(1, coarse/3)`, then uses
@@ -145,17 +162,17 @@ This keeps the requested second moment while narrowing the interval that mixes
 in an unblurred source. On normal Fold dimensions, the first positive level is
 one source pixel; requests at or above that level have zero sharp-branch weight
 on the moving pane. The fixed inner pane always uses the sharp branch.
-Unreachable levels are pruned using the unchanged `R * motion` bound, and the
-remaining contributions are added as weighted premultiplied colors.
+Unreachable levels are pruned using the maximum gap-derived frost radius at
+the moving pane's outer edge. The remaining contributions are added as weighted
+premultiplied colors. These native Gaussian mixtures are an approximation:
+they do not reproduce the gap-model references' Vogel-disk/Metal filter or the
+earlier browser/Classic 25-tap kernel with mip sampling.
 
-The earlier four-level graph could retain a strong sharp component despite
-matching the requested variance: for `R = 72` and requested sigma 3, mixing 0
-and `R/9 = 8` assigns 85.9% to the sharp source. Projection near the angle cap can
-stretch those letter strokes into long strips. The two finer levels address
-this source mixture without restoring the removed magnification gain. Native
-Gaussian mixtures still differ from the references' 25-tap binomial kernel and
-mip sampling. Up to two extra blur passes can increase GPU work; their visual
-result and device frame pacing have not been measured.
+The six-level graph was introduced in 0.6.5 to reduce sharp-source mixtures,
+but the user still reported unnatural stretching. Version 0.6.6 also removes
+the rigid 87.3-degree optical pose. The two extra small-radius passes relative to 0.6.4
+remain; neither their GPU cost nor this revision's visual result has been
+measured on a device.
 
 The launcher path does not call `View.draw()` into a bitmap, read pixels back
 to the CPU, generate cached mipmaps, or schedule idle captures. Android still
@@ -172,16 +189,31 @@ alone do not mark a sensor as stepped. A first observed jump between distinct
 fine/coarse-mode changes bridge from the previous filtered pose; ordinary fine
 sensor samples continue through the existing fine filter.
 
-The filtered angle advances the glass model through `Choreographer`. On resume,
+The monitor's filtered angle advances the glass model. On resume,
 `HomeActivity` keeps fold rendering inactive until the first real sensor sample
 installs a fresh pose, avoiding reuse of the angle from before stop. Synthetic
-settling frames cannot open this gate. `HandoffCalibrator` still records
-opening and closing display-switch observations, but the current optical model
-does not use those estimates to stretch or shorten its angle range.
-`LiveFoldLayout` updates shader uniforms on display
-frames while its short angle follower is moving. Once it settles, the fold frame
-loop stops; normal view invalidation still updates live content. At the clear
-endpoints, the layout removes its `RenderEffect` entirely.
+settling frames cannot open this gate. `HandoffCalibrator` records separate
+opening and closing display-switch observations. `LiveFoldLayout` holds its
+adopted handoff throughout the active gesture, including reversals and surface
+changes. Incoming calibration stays pending until the cover reaches its closed
+endpoint, the inner display reaches its open endpoint, or rendering is inactive.
+This prevents direction changes from immediately selecting a different optical pose.
+
+`HingeAngleMonitor` owns temporal filtering and its vsync settling callback.
+`LiveFoldLayout` coalesces pose/geometry changes and commits the latest uniforms
+once in pre-draw. Its former second 16 ms follower is removed. Unchanged draws
+do not recreate the effect, and there is no separate idle fold loop. Normal
+view invalidation still updates live content. At clear endpoints, the layout
+removes its `RenderEffect` entirely.
+
+Normal `HomeActivity` resumes reuse the attached icons and widget hosts.
+`AppWidgetHost.startListening()` delivers pending provider updates to those
+views. Package and widget-provider callbacks request content refreshes as needed;
+visible refreshes coalesce those changes, while an ordinary resume does not
+reload icons or reinflate widget hosts.
+Archived packages retain their placements. Actual uninstall events clean up
+saved shortcuts even while the activity is stopped, so a later activity
+recreation does not lose the pending removal.
 
 When the viewport changes, `HomeActivity` reflows the attached icon views and
 widget hosts. A pre-draw pass updates page and grid widths, restores the selected
@@ -208,8 +240,9 @@ effect.
 
 ```text
 wallpaper + launcher views → live RenderNode input → blur branches → AGSL projection
-hinge events → filtered angle → frame follower → physical bend, frost, and projection
-display geometry → view reflow + display classification (independent of optical angle)
+hinge events → monitor filtering → active-range optical pose → one pre-draw commit
+display handoff → pending calibration → adoption at a clear endpoint or inactive state
+display geometry → view reflow + display classification
 ```
 
 ## Runtime boundaries
@@ -232,10 +265,11 @@ display geometry → view reflow + display classification (independent of optica
 ## Device validation still required
 
 The previous 0.6.0 implementation passed 56 JVM tests and 32 desktop Skia pixel
-states across four rotations. Versions 0.6.1–0.6.4 later completed APK builds.
-These are historical results. The 0.6.5 APK build completed on 2026-09-26;
-tests and device interaction checks have not been run for its finer blur levels
-and branch wiring.
+states across four rotations. Versions 0.6.1–0.6.5 later completed APK builds.
+These are historical results. The final 0.6.6 APK build completed on 2026-09-26
+(version code 13). Tests and device interaction checks have
+not been run for the new angle mapping, curved strip,
+gap-based frost, pre-draw scheduling, or activity reuse.
 Desktop checks cannot
 execute Android's `RenderEffect` graph, validate glass-panel appearance, or
 measure device performance. Android GPU instrumentation remains unrun; no ADB

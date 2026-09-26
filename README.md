@@ -39,7 +39,7 @@ settings to switch back.
 
 ```text
 Duo Home views → live RenderEffect blur levels → AGSL glass projection
-physical hinge → filtered angle → per-frame transition
+physical hinge → filtered angle → eased optical pose → pre-draw commit
 ```
 
 - `HomeActivity` is declared as an Android `HOME` activity. The setup activity
@@ -52,27 +52,27 @@ physical hinge → filtered angle → per-frame transition
   supplies the current view and child contents, so clock and widget updates can
   remain visible while folding. There is no app-managed bitmap capture, readback,
   idle capture timer, or mipmap worker in the home rendering path.
-- `DuoFoldModel` maps the physical hinge angle directly: the cover
-  bends by that angle, and the inner pane bends by 180 degrees minus that
-  angle. Display handoff estimates and opening/closing direction do not remap
-  the optical pose. Projection alone is capped at 87.3 degrees to avoid collapse
-  at the edge-on position; frost still reaches its full envelope at 90 degrees.
-- The material-space frost envelope stays `maxBlur * motion * edge^1.35`.
-  The extra projection-magnification multiplier removed in 0.6.4 remains absent.
-- Version 0.6.5 adds two small-radius blur levels to the earlier four-level
-  approximation. On a normal Fold viewport, a requested blur of at least one
-  source pixel receives no unblurred contribution, targeting sharp letter strokes
-  that projection could stretch into long lines. Neighboring levels are blended
-  by variance. Native filtering remains an approximation of the reference's
-  25-tap kernel and mip sampling.
-- There are up to six levels, including the sharp source; tiny viewports can
-  use fewer after equivalent native radii are merged. Fold timing, projection,
-  sensor filtering, maximum outer-edge blur, and the rectangular drawer are
-  unchanged. The extra blur passes require device performance measurement.
-- A short frame follower bridges sensor updates. Resolved endpoints remove the
-  effect, and fold frame callbacks stop once the angle settles. Configuration
-  changes resize the existing icons and widget hosts rather than reloading
-  them during the display handoff.
+- Version 0.6.6 maps each display's visible hinge range to an optical tilt of
+  0–45 degrees, with cubic smoothstep easing. The cover rises from clear at
+  6 degrees to maximum tilt at the learned handoff; the inner pane resolves
+  from that handoff to clear at 172 degrees. The default handoff is 98 degrees.
+  Its calibration is held through a gesture, including direction reversals,
+  and a new value is adopted only at a clear endpoint or while rendering is inactive.
+- A smooth strip beside the hinge, about 4.43% of one pane's width, joins the
+  fixed and moving geometry. Frost now follows the glass-to-interface gap:
+  `min(maxBlur, 0.12 * gap)`. Perspective uses an eye at the display center,
+  320 mm away, with a minimum distance of twice the pane width. This replaces
+  the earlier rigid 87.3-degree projection and material-edge frost envelope.
+- The up-to-six Gaussian levels from 0.6.5 remain. On normal Fold dimensions,
+  blur requests of at least one source pixel have no unblurred contribution;
+  neighboring levels blend by variance. Tiny viewports merge equivalent native
+  radii. This is an approximation, not the references' Vogel-disk/Metal filter
+  or their 25-tap-and-mip alternative. GPU cost still needs device measurement.
+- `HingeAngleMonitor` owns angle filtering and settling. `LiveFoldLayout`
+  commits the latest result once before drawing, without a second 16 ms follower.
+  Resolved endpoints remove the effect. Normal activity resumes and display
+  configuration changes reuse attached icons and widget hosts; package/provider
+  changes trigger refreshes as needed.
 - Sensor selection favors streams observed reporting intermediate angles.
   Learned sensor quality survives the monitor's stop/start cycle; stop-only
   jumps and source changes are eased from the previous filtered pose. Resuming
@@ -123,12 +123,13 @@ The panels reuse the launcher's wallpaper source without capturing the screen.
 - Live rendering still needs GPU layers and blur passes. Real display handoff,
   widget updates during folding, and frame pacing need evaluation on a Fold
   device; removing bitmap capture does not establish a performance improvement.
-- Version 0.6.0 passed 56 JVM tests and 32 desktop shader pixel states. Those are
-  historical results; versions 0.6.1–0.6.4 subsequently built APKs. Version 0.6.5
-  also compiled and packaged successfully, but no tests or device interaction checks have been run for
-  its finer blur levels. Android GPU tests and physical-device
-  fidelity remain unverified; no ADB device or emulator was available in the
-  earlier checks. See [`docs/blur-validation.md`](docs/blur-validation.md).
+- Version 0.6.0 passed 56 JVM tests and 32 desktop shader pixel states, and
+  versions 0.6.1–0.6.5 subsequently built APKs. Those are historical results.
+  The final 0.6.6 APK compiled and packaged successfully on 2026-09-26. No tests,
+  runtime AGSL checks, or device interaction checks have been run for its geometry
+  and lifecycle changes. Android GPU
+  performance and physical-device fidelity remain unverified. See
+  [`docs/blur-validation.md`](docs/blur-validation.md).
 
 The transition work references [`Atomicx7/Duo-animation`](https://github.com/Atomicx7/Duo-animation),
 [`chuspeeism/iphone-duo`](https://github.com/chuspeeism/iphone-duo),
@@ -136,10 +137,16 @@ The transition work references [`Atomicx7/Duo-animation`](https://github.com/Ato
 the other repositories listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 The live view input follows Android's
 [AGSL RenderEffect API](https://developer.android.com/develop/ui/views/graphics/agsl/using-agsl).
-The current optical and frost model draws on
-[`iphone-duo/main.js`](https://github.com/chuspeeism/iphone-duo/blob/main/main.js)
-and [`ClassicGlassShader.kt`](https://github.com/joeconsorti/duo-fold-live/blob/main/app/src/main/java/org/duofold/live/ClassicGlassShader.kt).
-Their frost gradients differ: the browser study uses projected source UVs;
-the Classic Android adaptation uses pane coordinates, as Duo Home does.
+The current angle-range mapping draws on Android's
+[`duo-open/DuoShader.kt`](https://github.com/marcoazeem/duo-open/blob/main/app/src/main/java/com/duoopen/fold/DuoShader.kt).
+Gap-based optics draw on
+[`Atomicx7/duo_fold.agsl`](https://github.com/Atomicx7/Duo-animation/blob/master/app/src/main/res/raw/duo_fold.agsl)
+and DuoLikeAnimation's
+[`DuoFold.metal`](https://github.com/elijah-semyonov/DuoLikeAnimation/blob/main/DuoLikeAnimation/Shaders/DuoFold.metal)
+and [`FoldEffect.swift`](https://github.com/elijah-semyonov/DuoLikeAnimation/blob/main/DuoLikeAnimation/FoldEffect.swift).
+The 45-degree range is an Android mapping choice, not a cap imposed by that
+Swift implementation. The hinge-strip width is inspired by
+[`iphone-duo/main.js`](https://github.com/chuspeeism/iphone-duo/blob/main/main.js);
+Duo Home's smooth strip does not reproduce its Hermite mesh deformation exactly.
 
 Architecture notes: [`docs/architecture.md`](docs/architecture.md).

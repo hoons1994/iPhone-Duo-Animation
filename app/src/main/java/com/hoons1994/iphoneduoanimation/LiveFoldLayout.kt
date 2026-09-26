@@ -1,26 +1,25 @@
 package com.hoons1994.iphoneduoanimation
 
 import android.content.Context
-import android.view.Choreographer
 import android.view.DragEvent
 import android.view.MotionEvent
 import android.view.Surface
+import android.view.ViewTreeObserver
 import android.widget.FrameLayout
-import kotlin.math.abs
 
 /** The launcher itself is the shader input; child invalidations stay live at every angle. */
 internal class LiveFoldLayout(context: Context) : FrameLayout(context) {
     private val effects by lazy { LiveFoldEffects() }
     private var progress = 0f
-    private var targetProgress = 0f
     private var opening = true
     private var handoff = TransitionTuning.DEFAULT_HANDOFF_PROGRESS
+    private var pendingHandoff = handoff
     private var cover = SurfaceClassifier.classify(resources.displayMetrics.widthPixels,
         resources.displayMetrics.heightPixels) == SurfaceClassifier.Surface.COVER
     private var surfaceReported = false
     private var renderingActive = false
-    private var framePending = false
-    private var lastFrameNanos = 0L
+    private var renderPending = true
+    private var observedTree: ViewTreeObserver? = null
     private var displayedGeometry: LiveFoldGeometry? = null
     private var effectActive = false
     private var rejectedGesture = false
@@ -30,14 +29,15 @@ internal class LiveFoldLayout(context: Context) : FrameLayout(context) {
     var onSurfaceChanged: ((isCover: Boolean) -> Unit)? = null
     var onEffectActiveChanged: ((active: Boolean) -> Unit)? = null
 
-    private val frameCallback = Choreographer.FrameCallback { frameTimeNanos ->
-        framePending = false
-        val dt = if (lastFrameNanos == 0L) 1f / 120f else
-            ((frameTimeNanos - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, 0.05f)
-        lastFrameNanos = frameTimeNanos
-        progress = FrameSmoothing.step(progress, targetProgress, dt, 0.016f, 0.00005f)
-        renderCurrentGeometry()
-        if (progress != targetProgress) scheduleFrame() else lastFrameNanos = 0L
+    private val preDrawListener = ViewTreeObserver.OnPreDrawListener {
+        // The hinge monitor owns filtering and its vsync settle callback. Read
+        // its latest pose after animation callbacks, once before this traversal
+        // draws; a second independent follower adds latency and uneven pacing.
+        if (renderPending) {
+            renderPending = false
+            renderCurrentGeometry()
+        }
+        true
     }
 
     fun isCoverSurface() = cover
@@ -45,50 +45,54 @@ internal class LiveFoldLayout(context: Context) : FrameLayout(context) {
     fun setRenderingActive(active: Boolean) {
         if (renderingActive == active) return
         renderingActive = active
-        if (active) scheduleFrame() else {
+        if (active) requestRender() else {
             systemDragActive = false
-            cancelFrames()
             cancelTouch()
             clearEffect()
         }
     }
 
-    fun updateProgress(value: Float, isOpening: Boolean, interpolate: Boolean = true) {
+    fun updateProgress(value: Float, isOpening: Boolean) {
         if (!value.isFinite()) return
         val next = TransitionTuning.clampProgress(value)
-        if (next == targetProgress && isOpening == opening && interpolate) return
-        targetProgress = next
+        if (next == progress && isOpening == opening) return
+        progress = next
         opening = isOpening
-        if (!interpolate) {
-            progress = next
-            lastFrameNanos = 0L
-        }
-        scheduleFrame()
+        if (canAdoptHandoff()) handoff = pendingHandoff
+        requestRender()
     }
 
     fun setHandoffProgress(value: Float) {
         if (!value.isFinite()) return
-        val next = value.coerceIn(TransitionTuning.MIN_HANDOFF_PROGRESS,
+        pendingHandoff = value.coerceIn(TransitionTuning.MIN_HANDOFF_PROGRESS,
             TransitionTuning.MAX_HANDOFF_PROGRESS)
-        if (abs(next - handoff) < 0.0001f) return
-        handoff = next
-        scheduleFrame()
+        if (pendingHandoff == handoff || !canAdoptHandoff()) return
+        handoff = pendingHandoff
+        requestRender()
     }
+
+    // Keep one optical mapping through a reversal and across the display
+    // handoff. Learn calibration changes at a resolved endpoint or fresh start.
+    private fun canAdoptHandoff(): Boolean = !renderingActive ||
+        if (cover) progress * 180f <= TransitionTuning.REFERENCE_CLOSED_HINGE_DEGREES
+        else progress * 180f >= TransitionTuning.REFERENCE_INNER_CLEAR_OPENING_DEGREES
 
     fun refreshGeometry() {
         // Rotation can change by 180 degrees without changing the View size.
         cancelTouch()
         displayedGeometry = null
-        scheduleFrame()
+        requestRender()
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        scheduleFrame()
+        observedTree = viewTreeObserver.also { it.addOnPreDrawListener(preDrawListener) }
+        requestRender()
     }
 
     override fun onDetachedFromWindow() {
-        cancelFrames()
+        observedTree?.takeIf { it.isAlive }?.removeOnPreDrawListener(preDrawListener)
+        observedTree = null
         cancelTouch()
         clearEffect()
         super.onDetachedFromWindow()
@@ -96,8 +100,7 @@ internal class LiveFoldLayout(context: Context) : FrameLayout(context) {
 
     override fun onWindowVisibilityChanged(visibility: Int) {
         super.onWindowVisibilityChanged(visibility)
-        if (visibility == VISIBLE) scheduleFrame() else {
-            cancelFrames()
+        if (visibility == VISIBLE) requestRender() else {
             cancelTouch()
             clearEffect()
         }
@@ -115,21 +118,13 @@ internal class LiveFoldLayout(context: Context) : FrameLayout(context) {
             surfaceReported = true
             onSurfaceChanged?.invoke(cover)
         }
-        // Update before this size's first draw: no stale texture or surface buffer
-        // can remain while Android relayouts the cover/inner launcher.
-        renderCurrentGeometry()
+        // Commit the new size and latest sensor pose together at pre-draw.
+        requestRender()
     }
 
-    private fun scheduleFrame() {
-        if (framePending || !renderingActive || !isAttachedToWindow || windowVisibility != VISIBLE) return
-        framePending = true
-        Choreographer.getInstance().postFrameCallback(frameCallback)
-    }
-
-    private fun cancelFrames() {
-        if (framePending) Choreographer.getInstance().removeFrameCallback(frameCallback)
-        framePending = false
-        lastFrameNanos = 0L
+    private fun requestRender() {
+        renderPending = true
+        if (renderingActive && isAttachedToWindow && windowVisibility == VISIBLE) invalidate()
     }
 
     private fun renderCurrentGeometry() {
@@ -153,6 +148,7 @@ internal class LiveFoldLayout(context: Context) : FrameLayout(context) {
     private fun clearEffect() {
         setRenderEffect(null)
         displayedGeometry = null
+        renderPending = true
         notifyEffectActive(false)
     }
 
@@ -198,7 +194,7 @@ internal class LiveFoldLayout(context: Context) : FrameLayout(context) {
         if (event.action == DragEvent.ACTION_DRAG_ENDED ||
             event.action == DragEvent.ACTION_DRAG_STARTED && !handled) {
             systemDragActive = false
-            scheduleFrame()
+            requestRender()
         }
         return handled
     }

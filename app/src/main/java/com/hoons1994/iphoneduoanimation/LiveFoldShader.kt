@@ -15,7 +15,9 @@ internal object LiveFoldShader {
         uniform float foldSin;
         uniform float eyeDistancePx;
         uniform float maxBlurPx;
-        uniform float motionAmount;
+        uniform float hingeFlexPx;
+        uniform float blurSpread;
+        uniform float darkening;
         uniform float hingeAxisY;
         uniform float hingeFromEnd;
         uniform float level;
@@ -53,25 +55,25 @@ internal object LiveFoldShader {
 
             float hinge = coverSurface > 0.5 ? 0.0 : axisExtent * 0.5;
             float distance = coverSurface > 0.5 ? axis : hinge - axis;
-            float glassAxis = coverSurface > 0.5 ? distance * foldCos : hinge - distance * foldCos;
-            float gap = max(0.0, distance * foldSin);
-            // Frost belongs to the physical pane, not the projected image.
-            // Keep the hinge clear and roll frost outward with the reference's
-            // eased envelope; near-edge-on projection cannot erase the blur.
-            float paneExtent = coverSurface > 0.5 ? axisExtent : axisExtent * 0.5;
-            float edge = clamp(distance / max(paneExtent, 1.0), 0.0, 1.0);
+            // Match LiveFoldGeometry: the hinge joins the stationary pane with
+            // an identity tangent, then smoothly reaches the optical tilt.
+            float u = clamp(distance / hingeFlexPx, 0.0, 1.0);
+            float bentDistance = distance < hingeFlexPx ?
+                hingeFlexPx * u * u * u * (1.0 - 0.5 * u) : distance - hingeFlexPx * 0.5;
+            float glassDistance = distance - (1.0 - foldCos) * bentDistance;
+            float glassAxis = coverSurface > 0.5 ? glassDistance : hinge - glassDistance;
+            float gap = max(0.0, bentDistance * foldSin);
             float depth = eyeDistancePx - gap;
             if (depth <= 0.001) {
                 return level < 0.5 ? half4(0.0, 0.0, 0.0, 1.0) : half4(0.0);
             }
-            // ClassicGlassShader's source-space material radius. Projection
-            // already stretches this blur along the pane; multiplying by its
-            // magnification again saturated even the region next to the hinge.
-            float radius = maxBlurPx * motionAmount * pow(edge, 1.35);
+            // DuoLikeAnimation's separation-based frost. No inverse projection
+            // gain: both radius and shadow resolve continuously at the hinge.
+            float radius = min(maxBlurPx, blurSpread * gap);
             half weight = half(levelWeight(radius));
             if (weight <= 0.0) return half4(0.0);
 
-            float eyeAxis = hinge;
+            float eyeAxis = axisExtent * 0.5;
             float perspective = eyeDistancePx / depth;
             float hitAxis = eyeAxis + (glassAxis - eyeAxis) * perspective;
             float hitAcross = acrossExtent * 0.5 + (across - acrossExtent * 0.5) * perspective;
@@ -84,8 +86,7 @@ internal object LiveFoldShader {
             float2 coverage = smoothstep(float2(-footprint), float2(footprint), source) *
                 (1.0 - smoothstep(resolution - footprint, resolution + footprint, source));
             half4 color = content.eval(clamp(source, float2(0.5), resolution - 0.5));
-            float darkenEdge = clamp((edge - 0.2) / 0.8, 0.0, 1.0);
-            float shade = 1.0 - min(1.0, 2.0 * motionAmount * pow(darkenEdge, 1.35));
+            float shade = max(1.0 - darkening * radius, 0.0);
             half attenuation = half(shade * coverage.x * coverage.y);
             return half4(color.rgb * attenuation, color.a) * weight;
         }
@@ -106,9 +107,8 @@ internal class LiveFoldEffects {
             blurs = Array(radii.size) { index -> if (index == 0) null else blur(radii[index]) }
         }
         var combined: RenderEffect? = null
-        // The material envelope is largest at the outer edge (edge == 1).
-        // Projection changes sample positions, not the source blur radius.
-        val reachableRadius = geometry.maxBlurPx * geometry.motion
+        // The glass-to-UI gap, hence the frost radius, grows towards the edge.
+        val reachableRadius = geometry.maxFrostRadiusPx
         radii.forEachIndexed { index, radius ->
             // A branch that is transparent everywhere must not run its native
             // blur pass, especially during the long, almost-clear fold tail.
@@ -121,7 +121,9 @@ internal class LiveFoldEffects {
             shader.setFloatUniform("foldSin", geometry.foldSin)
             shader.setFloatUniform("eyeDistancePx", geometry.eyeDistancePx)
             shader.setFloatUniform("maxBlurPx", geometry.maxBlurPx)
-            shader.setFloatUniform("motionAmount", geometry.motion)
+            shader.setFloatUniform("hingeFlexPx", geometry.hingeFlexPx)
+            shader.setFloatUniform("blurSpread", DuoFoldModel.BLUR_SPREAD)
+            shader.setFloatUniform("darkening", geometry.darkening)
             shader.setFloatUniform("hingeAxisY", if (geometry.axisY) 1f else 0f)
             shader.setFloatUniform("hingeFromEnd", if (geometry.hingeFromEnd) 1f else 0f)
             shader.setFloatUniform("level", index.toFloat())

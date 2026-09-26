@@ -6,8 +6,11 @@ import android.appwidget.AppWidgetHost
 import android.appwidget.AppWidgetHostView
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProviderInfo
+import android.content.BroadcastReceiver
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.ClipData
 import android.content.pm.ResolveInfo
 import android.content.res.Configuration
@@ -76,11 +79,25 @@ class HomeActivity : Activity() {
     private var appDrawer: FrameLayout? = null
     private var drawerGrid: GridView? = null
     private var drawerSearch: EditText? = null
+    private var refreshDrawerApps: (() -> Unit)? = null
     private var drawerClosing = false
     private val homeBackCallback = android.window.OnBackInvokedCallback { handleHomeBack() }
 
     private val widgetManager by lazy { AppWidgetManager.getInstance(this) }
-    private val widgetHost by lazy { AppWidgetHost(this, WIDGET_HOST_ID) }
+    private val widgetHost: AppWidgetHost by lazy {
+        object : AppWidgetHost(this, WIDGET_HOST_ID) {
+            override fun onProvidersChanged() {
+                widgetsDirty = true
+                scheduleHomeRefresh()
+            }
+
+            override fun onAppWidgetRemoved(appWidgetId: Int) {
+                pendingRemovedWidgetIds.add(appWidgetId)
+                widgetsDirty = true
+                scheduleHomeRefresh()
+            }
+        }
+    }
     private val preferences by lazy { getSharedPreferences(HOME_PREFERENCES, MODE_PRIVATE) }
     private val mainHandler = Handler(Looper.getMainLooper())
     private val handoffPreferences by lazy { HandoffCalibrationPreferences(this) }
@@ -113,6 +130,38 @@ class HomeActivity : Activity() {
     private var homeReflowListener: ViewTreeObserver.OnPreDrawListener? = null
     private var homeReflowPage: Int? = null
     private val widgetOptionWidths = HashMap<Int, Int>()
+    private var shortcutsDirty = true
+    private var widgetsDirty = true
+    private var drawerAppsDirty = false
+    private var packageReceiverRegistered = false
+    private val pendingRemovedPackages = LinkedHashSet<String>()
+    private val pendingRemovedWidgetIds = LinkedHashSet<Int>()
+    private val homeRefreshRunnable = Runnable { refreshHomeIfNeeded() }
+    private val packageReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val changedPackage = intent.data?.schemeSpecificPart ?: return
+            when (intent.action) {
+                Intent.ACTION_PACKAGE_REMOVED -> {
+                    // Updates and archiving remove an APK without uninstalling
+                    // the user's app. Preserve its saved home placement.
+                    if (intent.getBooleanExtra(Intent.EXTRA_REPLACING, false) ||
+                        intent.getBooleanExtra(Intent.EXTRA_ARCHIVAL, false)) return
+                    pendingRemovedPackages.add(changedPackage)
+                    // Persist the data cleanup even while stopped: this Activity
+                    // can be destroyed before its next visible refresh.
+                    removeUninstalledShortcuts()
+                }
+                Intent.ACTION_PACKAGE_ADDED, Intent.ACTION_PACKAGE_REPLACED ->
+                    pendingRemovedPackages.remove(changedPackage)
+                Intent.ACTION_PACKAGE_CHANGED -> Unit
+                else -> return
+            }
+            shortcutsDirty = true
+            widgetsDirty = true
+            drawerAppsDirty = true
+            scheduleHomeRefresh()
+        }
+    }
 
     private data class PinnedShortcut(val component: String, val page: Int)
     private data class WidgetPlacement(val id: Int, val page: Int, val heightDp: Int = 0)
@@ -130,8 +179,7 @@ class HomeActivity : Activity() {
                     lastSignalAtMs = android.os.SystemClock.elapsedRealtime()
                 }
                 homeContent.setHandoffProgress(handoffCalibrator.estimate(signal.opening))
-                homeContent.updateProgress(signal.filteredProgress, signal.opening,
-                    interpolate = !awaitingHingeSample)
+                homeContent.updateProgress(signal.filteredProgress, signal.opening)
                 if (awaitingHingeSample) {
                     // Install the first fresh pose before allowing a frame.
                     // Resuming must never render the angle from before stop().
@@ -162,7 +210,16 @@ class HomeActivity : Activity() {
         buildHome()
         onBackInvokedDispatcher.registerOnBackInvokedCallback(
             android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, homeBackCallback)
-        renderShortcuts()
+        // Keep observing installed apps while this Activity is stopped. Only
+        // the next visible refresh touches Views; a normal resume reuses them.
+        registerReceiver(packageReceiver, IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addAction(Intent.ACTION_PACKAGE_CHANGED)
+            addAction(Intent.ACTION_PACKAGE_REPLACED)
+            addDataScheme("package")
+        }, Context.RECEIVER_NOT_EXPORTED)
+        packageReceiverRegistered = true
     }
 
     override fun onStart() {
@@ -172,15 +229,16 @@ class HomeActivity : Activity() {
         lastSignalAtMs = 0L
         latestRawProgress = Float.NaN
         homeContent.setRenderingActive(false)
+        hingeMonitor.start()
         startClock()
-        renderShortcuts()
+        if (!widgetListening) {
+            // startListening delivers pending RemoteViews/provider/removal
+            // updates to the existing host Views; it does not need new Views.
+            widgetListening = runCatching { widgetHost.startListening(); true }.getOrDefault(false)
+        }
+        refreshHomeIfNeeded()
         wallpaperView.post { refreshWallpaper() }
         refreshGlassPanels()
-        if (!widgetListening) {
-            widgetListening = runCatching { widgetHost.startListening(); true }.getOrDefault(false)
-            renderWidgets()
-        }
-        hingeMonitor.start()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -216,6 +274,7 @@ class HomeActivity : Activity() {
 
     override fun onStop() {
         homeStarted = false
+        mainHandler.removeCallbacks(homeRefreshRunnable)
         dismissAllGlassMenus()
         stopClock()
         hingeMonitor.stop()
@@ -228,6 +287,11 @@ class HomeActivity : Activity() {
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacks(homeRefreshRunnable)
+        if (packageReceiverRegistered) {
+            unregisterReceiver(packageReceiver)
+            packageReceiverRegistered = false
+        }
         stopClock()
         dismissAllGlassMenus()
         homeReflowListener?.let { listener ->
@@ -238,6 +302,51 @@ class HomeActivity : Activity() {
         wallpaperExecutor.shutdownNow()
         onBackInvokedDispatcher.unregisterOnBackInvokedCallback(homeBackCallback)
         super.onDestroy()
+    }
+
+    private fun scheduleHomeRefresh() {
+        if (!homeStarted || isDestroyed) return
+        // Package updates can emit ADDED, CHANGED, REPLACED and provider
+        // callbacks together. Coalesce those into one visible rebuild.
+        mainHandler.removeCallbacks(homeRefreshRunnable)
+        mainHandler.postDelayed(homeRefreshRunnable, 120L)
+    }
+
+    private fun refreshHomeIfNeeded() {
+        if (!homeStarted || isDestroyed) return
+        mainHandler.removeCallbacks(homeRefreshRunnable)
+        if (drawerAppsDirty) dismissAllGlassMenus()
+        removeUninstalledShortcuts()
+        if (pendingRemovedWidgetIds.isNotEmpty()) {
+            saveWidgetPlacements(widgetPlacements().filterNot { it.id in pendingRemovedWidgetIds })
+            pendingRemovedWidgetIds.clear()
+            widgetsDirty = true
+        }
+        if (shortcutsDirty) renderShortcuts()
+        if (widgetsDirty) renderWidgets()
+        if (drawerAppsDirty) {
+            refreshDrawerApps?.invoke()
+            drawerAppsDirty = false
+        }
+    }
+
+    private fun removeUninstalledShortcuts() {
+        if (pendingRemovedPackages.isEmpty()) return
+        shortcutsDirty = true
+        fun wasRemoved(component: String): Boolean {
+            val name = ComponentName.unflattenFromString(component)?.packageName ?: return false
+            return name in pendingRemovedPackages
+        }
+        val pinned = pinnedShortcuts()
+        val remaining = pinned.filterNot { !isFolderComponent(it.component) && wasRemoved(it.component) }
+        if (remaining.size != pinned.size) savePinnedShortcuts(remaining)
+        // Retain folders and their names even when their last app is removed.
+        remaining.filter { isFolderComponent(it.component) }.forEach { shortcut ->
+            val folder = homeFolder(folderId(shortcut.component)) ?: return@forEach
+            val apps = folder.components.filterNot(::wasRemoved)
+            if (apps.size != folder.components.size) saveHomeFolder(folder.copy(components = apps))
+        }
+        pendingRemovedPackages.clear()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -497,7 +606,7 @@ class HomeActivity : Activity() {
         val initialProgress = if (homeContent.isCoverSurface()) 0f else 1f
         latestProgress = initialProgress
         homeContent.setHandoffProgress(handoffCalibrator.estimate(true))
-        homeContent.updateProgress(initialProgress, isOpening = true, interpolate = false)
+        homeContent.updateProgress(initialProgress, isOpening = true)
         previousCoverSurface = homeContent.isCoverSurface()
         homeContent.onSurfaceChanged = { isCover ->
             val previous = previousCoverSurface
@@ -511,7 +620,7 @@ class HomeActivity : Activity() {
             previousCoverSurface = isCover
             if (!hingeMonitor.isAvailable) {
                 latestProgress = if (isCover) 0f else 1f
-                homeContent.updateProgress(latestProgress, latestOpening, interpolate = false)
+                homeContent.updateProgress(latestProgress, latestOpening)
             }
         }
         homeContent.onEffectActiveChanged = { active ->
@@ -544,6 +653,7 @@ class HomeActivity : Activity() {
     }
 
     private fun setEditingHome(editing: Boolean, redraw: Boolean = true) {
+        if (isEditingHome == editing) return
         isEditingHome = editing
         editButton.text = getString(if (editing) R.string.home_done else R.string.home_edit)
         editToolbar.visibility = if (editing) View.VISIBLE else View.GONE
@@ -725,6 +835,7 @@ class HomeActivity : Activity() {
             }
         }
         renderDock(pinned)
+        shortcutsDirty = false
     }
 
     private fun renderDock(pinned: List<PinnedShortcut>) {
@@ -1419,6 +1530,10 @@ class HomeActivity : Activity() {
                 else -> getString(R.string.home_app_count, adapter.count)
             }
         }
+        refreshDrawerApps = {
+            adapter.replaceApps(launcherActivities(), drawerSearch?.text?.toString().orEmpty())
+            updateCount()
+        }
         updateCount()
         titleStack.addView(title)
         titleStack.addView(count)
@@ -1565,6 +1680,7 @@ class HomeActivity : Activity() {
                 appDrawer = null
                 drawerGrid = null
                 drawerSearch = null
+                refreshDrawerApps = null
                 drawerClosing = false
                 homeColumn.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
                 editButton.requestFocus()
@@ -1606,10 +1722,17 @@ class HomeActivity : Activity() {
         Toast.makeText(this, "Dock에 추가했습니다.", Toast.LENGTH_SHORT).show()
     }
 
-    private inner class LauncherActivityAdapter(private val allApps: List<ResolveInfo>) : BaseAdapter() {
+    private inner class LauncherActivityAdapter(private var allApps: List<ResolveInfo>) : BaseAdapter() {
         private var visibleApps = allApps
-        private val labels = allApps.associateWith { it.loadLabel(packageManager).toString() }
+        private var labels = allApps.associateWith { it.loadLabel(packageManager).toString() }
         private val icons = android.util.LruCache<String, Drawable>(72)
+
+        fun replaceApps(apps: List<ResolveInfo>, query: String) {
+            allApps = apps
+            labels = apps.associateWith { it.loadLabel(packageManager).toString() }
+            icons.evictAll()
+            filter(query)
+        }
 
         fun filter(query: String) {
             val needle = query.trim().lowercase()
@@ -1769,18 +1892,47 @@ class HomeActivity : Activity() {
 
     private fun renderWidgets() {
         if (!::widgetStacks.isInitialized) return
+        val previousFrames = HashMap<Int, FrameLayout>()
+        widgetStacks.forEach { stack ->
+            for (index in 0 until stack.childCount) {
+                val frame = stack.getChildAt(index) as? FrameLayout ?: continue
+                val hostView = frame.getChildAt(0) as? AppWidgetHostView ?: continue
+                previousFrames[hostView.appWidgetId] = frame
+            }
+        }
         widgetStacks.forEach { it.removeAllViews() }
         widgetOptionWidths.clear()
         val placements = widgetPlacements()
         val validPlacements = ArrayList<WidgetPlacement>()
+        val assignedIds by lazy { runCatching { widgetHost.appWidgetIds.toSet() }.getOrNull() }
+        var needsRetry = false
         for (placement in placements) {
-            val info = widgetManager.getAppWidgetInfo(placement.id)
+            val info = runCatching { widgetManager.getAppWidgetInfo(placement.id) }.getOrNull()
             if (info == null) {
-                runCatching { widgetHost.deleteAppWidgetId(placement.id) }
+                val ids = assignedIds
+                if (ids != null && placement.id !in ids) {
+                    runCatching { widgetHost.deleteAppWidgetId(placement.id) }
+                    continue
+                }
+                // A provider can be temporarily unavailable during an APK
+                // update. Only prune an ID the system no longer owns; keep
+                // its saved placement and last RemoteViews otherwise.
+                validPlacements += placement
+                previousFrames[placement.id]?.let { frame ->
+                    widgetStacks[placement.page.coerceIn(0, HOME_PAGE_COUNT - 1)].addView(frame)
+                }
+                needsRetry = true
                 continue
             }
             validPlacements += placement
-            val hostView = runCatching { widgetHost.createView(this, placement.id, info) }.getOrNull() ?: continue
+            val hostView = runCatching { widgetHost.createView(this, placement.id, info) }.getOrNull()
+            if (hostView == null) {
+                previousFrames[placement.id]?.let { frame ->
+                    widgetStacks[placement.page.coerceIn(0, HOME_PAGE_COUNT - 1)].addView(frame)
+                }
+                needsRetry = true
+                continue
+            }
             hostView.setAppWidget(placement.id, info)
             val heightDp = (placement.heightDp.takeIf { it > 0 } ?: info.minHeight.coerceAtLeast(120))
                 .coerceIn(100, 600)
@@ -1811,6 +1963,7 @@ class HomeActivity : Activity() {
             )
         }
         if (validPlacements.size != placements.size) saveWidgetPlacements(validPlacements)
+        widgetsDirty = needsRetry
     }
 
     /** Keep RemoteViews and their current content alive across cover/inner resize. */
