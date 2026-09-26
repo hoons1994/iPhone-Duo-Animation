@@ -101,8 +101,8 @@ current `RenderNode` contents, including ordinary child views, as the shader
 input. Launcher redraws and widget updates can therefore reach the folded pane
 without waiting for an app-managed snapshot refresh.
 
-Version 0.6.4 changes the live frost envelope and blur-level interpolation while
-retaining fold timing, projection geometry, and the maximum outer-edge blur.
+Version 0.6.5 refines the live blur levels while retaining the material radius,
+fold timing, projection geometry, sensors, and maximum outer-edge blur from 0.6.4.
 The renderer uses `DuoFoldModel`, independently of the legacy
 `TransitionTuning` snapshot model. Given hinge angle `h`, cover bend is `h` and
 inner bend is `180 - h`. Neither a learned display-switch angle nor a change of
@@ -131,18 +131,31 @@ The current radius is `maxBlurPx * motion * pow(edge, 1.35)`. The extra
 its radius again added excess near-hinge blur. That extra gain was a Duo Home
 adaptation and is absent from the inspected reference formulas.
 
-`LiveFoldEffects` supplies sharp content and three native Gaussian levels whose
-target source-space blur radii are one ninth, one third, and the full maximum.
-It converts each target to Android's native radius using
-`max(0.01, (targetRadius - 0.5) / 0.57735)`. This approximates the variance of the
-reference 5x5 binomial footprint; native filtering and interpolation do not
-reproduce that kernel exactly. In 0.6.4, `LiveFoldShader` chooses adjacent-level
-weights from `(radius / maxBlurPx)^2` using variance boundaries
-`0, 1/81, 1/9, 1`. Mixing these variances preserves the requested second moment
-more closely than mixing the radii; the resulting mixture is still an
-approximation, not a single exact Gaussian or the reference kernel. The shader
-adds weighted premultiplied colors. The fixed inner pane stays on the sharp
-branch, and unreachable levels are pruned using `maxBlurPx * motion`.
+`DuoFoldModel.blurLevels()` supplies up to six source-space levels. With maximum
+radius `R`, it defines `coarse = R/9` and `fine = min(1, coarse/3)`, then uses
+`[0, fine, sqrt(fine * coarse), coarse, R/3, R]`. Positive levels respect the
+native filter's minimum effective sigma of approximately 0.505774 source pixels;
+equivalent levels are deduplicated, so very small viewports may use fewer than
+six. `LiveFoldEffects` converts these targets to native radius with
+`max(0.01, (targetRadius - 0.5) / 0.57735)`.
+
+Each shader branch receives its lower, current, and upper radius through
+`radiusStops`, then computes adjacent-level weights in squared-radius space.
+This keeps the requested second moment while narrowing the interval that mixes
+in an unblurred source. On normal Fold dimensions, the first positive level is
+one source pixel; requests at or above that level have zero sharp-branch weight
+on the moving pane. The fixed inner pane always uses the sharp branch.
+Unreachable levels are pruned using the unchanged `R * motion` bound, and the
+remaining contributions are added as weighted premultiplied colors.
+
+The earlier four-level graph could retain a strong sharp component despite
+matching the requested variance: for `R = 72` and requested sigma 3, mixing 0
+and `R/9 = 8` assigns 85.9% to the sharp source. Projection near the angle cap can
+stretch those letter strokes into long strips. The two finer levels address
+this source mixture without restoring the removed magnification gain. Native
+Gaussian mixtures still differ from the references' 25-tap binomial kernel and
+mip sampling. Up to two extra blur passes can increase GPU work; their visual
+result and device frame pacing have not been measured.
 
 The launcher path does not call `View.draw()` into a bitmap, read pixels back
 to the CPU, generate cached mipmaps, or schedule idle captures. Android still
@@ -219,10 +232,10 @@ display geometry → view reflow + display classification (independent of optica
 ## Device validation still required
 
 The previous 0.6.0 implementation passed 56 JVM tests and 32 desktop Skia pixel
-states across four rotations. Versions 0.6.1–0.6.3 later completed APK builds.
-These are historical results. The 0.6.4 APK build completed on 2026-09-26;
-tests and device interaction checks have not been run for its restored frost envelope,
-variance interpolation, or rectangular app drawer.
+states across four rotations. Versions 0.6.1–0.6.4 later completed APK builds.
+These are historical results. The 0.6.5 APK build completed on 2026-09-26;
+tests and device interaction checks have not been run for its finer blur levels
+and branch wiring.
 Desktop checks cannot
 execute Android's `RenderEffect` graph, validate glass-panel appearance, or
 measure device performance. Android GPU instrumentation remains unrun; no ADB

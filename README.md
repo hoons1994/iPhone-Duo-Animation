@@ -57,14 +57,18 @@ physical hinge → filtered angle → per-frame transition
   angle. Display handoff estimates and opening/closing direction do not remap
   the optical pose. Projection alone is capped at 87.3 degrees to avoid collapse
   at the edge-on position; frost still reaches its full envelope at 90 degrees.
-- Version 0.6.4 restores the Android reference's material-space frost envelope,
-  `maxBlur * motion * edge^1.35`, and removes the extra projection-magnification
-  multiplier added in 0.6.2. Source blur is already stretched by projection;
-  the added multiplier caused excessive blur near the hinge.
-- Four live levels—sharp plus three native Gaussian blurs—are blended by their
-  variance (squared radius), reducing excess blur when mixing small radii near
-  the hinge. This is Duo Home's approximation of the reference binomial filter.
-  Fold timing, projection geometry, and the outer-edge maximum blur are unchanged.
+- The material-space frost envelope stays `maxBlur * motion * edge^1.35`.
+  The extra projection-magnification multiplier removed in 0.6.4 remains absent.
+- Version 0.6.5 adds two small-radius blur levels to the earlier four-level
+  approximation. On a normal Fold viewport, a requested blur of at least one
+  source pixel receives no unblurred contribution, targeting sharp letter strokes
+  that projection could stretch into long lines. Neighboring levels are blended
+  by variance. Native filtering remains an approximation of the reference's
+  25-tap kernel and mip sampling.
+- There are up to six levels, including the sharp source; tiny viewports can
+  use fewer after equivalent native radii are merged. Fold timing, projection,
+  sensor filtering, maximum outer-edge blur, and the rectangular drawer are
+  unchanged. The extra blur passes require device performance measurement.
 - A short frame follower bridges sensor updates. Resolved endpoints remove the
   effect, and fold frame callbacks stop once the angle settles. Configuration
   changes resize the existing icons and widget hosts rather than reloading
@@ -120,9 +124,9 @@ The panels reuse the launcher's wallpaper source without capturing the screen.
   widget updates during folding, and frame pacing need evaluation on a Fold
   device; removing bitmap capture does not establish a performance improvement.
 - Version 0.6.0 passed 56 JVM tests and 32 desktop shader pixel states. Those are
-  historical results; versions 0.6.1–0.6.3 subsequently built APKs. Version 0.6.4
-  also compiled and packaged successfully, but no tests or device interaction checks have been run for its
-  blur interpolation and drawer-boundary changes. Android GPU tests and physical-device
+  historical results; versions 0.6.1–0.6.4 subsequently built APKs. Version 0.6.5
+  also compiled and packaged successfully, but no tests or device interaction checks have been run for
+  its finer blur levels. Android GPU tests and physical-device
   fidelity remain unverified; no ADB device or emulator was available in the
   earlier checks. See [`docs/blur-validation.md`](docs/blur-validation.md).
 

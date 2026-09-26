@@ -52,12 +52,21 @@ def render(effect, angle, cover, rotation):
     radius = 72 * SIZE / (774 if cover else 1600)
     surface = skia.Surface(SIZE, SIZE)
     surface.getCanvas().clear(skia.ColorTRANSPARENT)
-    for level, factor in enumerate((0, 1 / 9, 1 / 3, 1)):
+    # Mirror DuoFoldModel.blurLevels, including the fine source-pixel levels.
+    coarse = radius / 9
+    fine = min(1, coarse / 3)
+    radii = (0, fine, math.sqrt(fine * coarse), coarse, radius / 3, radius)
+    minimum_sigma = 0.57735 * 0.01 + 0.5
+    radii = tuple(dict.fromkeys(0 if value == 0 else max(value, minimum_sigma)
+                               for value in radii))
+    for level, blur_radius in enumerate(radii):
         builder = skia.RuntimeShaderBuilder(effect)
-        image = blur_image(source, radius * factor)
+        image = blur_image(source, blur_radius)
         builder.setChild("content", image.makeShader(skia.TileMode.kClamp,
                          skia.TileMode.kClamp, SAMPLING))
         builder.setUniform("resolution", skia.V2(SIZE, SIZE))
+        builder.setUniform("radiusStops", skia.V3(radii[max(0, level - 1)],
+                           blur_radius, radii[min(len(radii) - 1, level + 1)]))
         uniforms = dict(coverSurface=float(cover), foldCos=math.cos(radians),
                         foldSin=math.sin(radians),
                         eyeDistancePx=SIZE * ((40 - .825538) / 7.73936 if cover

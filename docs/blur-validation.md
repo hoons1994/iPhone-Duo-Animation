@@ -1,29 +1,34 @@
 # Live blur architecture and historical regression evidence
 
-## Current 0.6.4 scope
+## Current 0.6.5 scope
 
-Version 0.6.4 (version code 11) restores the Classic Android material-space frost
-radius, removes the extra projection-magnification gain, and blends native
-Gaussian levels by variance. The app drawer now fills the viewport with a
-rectangular outer boundary. Fold timing, projection geometry, and maximum
-outer-edge blur remain unchanged.
+Version 0.6.5 (version code 12) adds finer live Gaussian levels to target letter
+strokes stretched into long lines near the hinge, as reported in `58640.jpg`.
+The material radius, projection, sensor response, fold timing, maximum outer-edge
+blur, and rectangular app drawer from 0.6.4 are unchanged. The removed `1/J`
+magnification gain remains absent.
 
-`:app:assembleDebug` completed successfully for 0.6.4 (version code 11) on
-2026-09-26 in 36 seconds. This covers APK compilation and packaging. No tests or
-physical-device checks have been run for this revision. AGSL compiles at runtime,
-so the build does not validate the new shader on an Android GPU. Existing results
-do not verify the new blur weights or drawer appearance. Android GPU execution,
-frame pacing, and reference fidelity remain unverified.
+`:app:assembleDebug` completed successfully for 0.6.5 (version code 12) on
+2026-09-26 in 32 seconds, covering APK compilation and packaging. No new tests
+or physical-device checks have been run. The desktop diagnostic fixture has been
+synchronized to the new level list, native minimum sigma, deduplication, and
+`radiusStops` wiring; synchronization is not a test result. Runtime AGSL execution,
+Android GPU cost, frame pacing, and physical reference fidelity remain unverified.
+The two additional small-radius passes do not establish a performance improvement.
 
 ## Current fold renderer
 
 `HomeActivity` now renders its current view tree through `LiveFoldLayout` and
-Android's `RenderEffect` input. `LiveFoldEffects` supplies four live levels:
-sharp, maximum source-space blur divided by nine, maximum divided by three, and
-maximum. `DuoFoldModel.nativeBlurRadius()` converts these targets to Android's
-native Gaussian radius with `(targetRadius - 0.5) / 0.57735`, clamped to 0.01.
-Matching the reference binomial kernel's variance is an approximation; its
-25-tap footprint, mip sampling, and our level interpolation are different filters.
+Android's `RenderEffect` input. For maximum source-space radius `R`,
+`DuoFoldModel.blurLevels()` starts from
+`[0, fine, sqrt(fine * coarse), coarse, R/3, R]`, with `coarse = R/9` and
+`fine = min(1, coarse/3)`. Positive stops are clamped to the approximately
+0.505774-pixel minimum effective native sigma and deduplicated. This produces
+up to six live levels: the sharp source plus at most five native Gaussian levels.
+`DuoFoldModel.nativeBlurRadius()` converts the positive targets using
+`(targetRadius - 0.5) / 0.57735`, clamped to 0.01. The references use both a
+25-tap binomial footprint and mip sampling; these native Gaussian levels are
+an approximation and do not reproduce that filter exactly.
 
 `DuoFoldModel` maps cover bend to the hinge angle and inner bend to 180 degrees
 minus that angle. Handoff calibration and direction do not alter the optical
@@ -43,13 +48,13 @@ browser `main.js` computes its frost gradient from projected `sourceUV`, while
 `ClassicGlassShader` uses coordinates on the pane. Duo Home follows the latter
 envelope; it does not reproduce the browser gradient exactly.
 
-The native blur levels represent target radii `0, R/9, R/3, R`. Version 0.6.4
-interpolates their variance using normalized squared radius and boundaries
-`0, 1/81, 1/9, 1`. Linear-radius mixing had weighted the broader blur too heavily
-for small requested radii near the hinge. This second-moment interpolation is
-our live Gaussian approximation, not a reference shader formula or an exact
-reproduction of its binomial and mip filtering. The reachable-radius bound is
-again `R * motion`, so branches are omitted only outside the material envelope.
+Every branch receives its neighboring radii through a `radiusStops` uniform and
+computes a triangular weight in variance space. On normal Fold viewports the
+first positive stop is one source pixel, so moving-pane requests of one pixel
+or more have zero unblurred contribution. Very small outputs use their clamped,
+deduplicated stops. This interpolation remains our approximation, not an exact
+reference filter. The reachable-radius bound stays `R * motion`, so pruning
+continues to follow the material envelope.
 
 The shader projects each level through the same glass geometry, interpolates
 adjacent levels, and adds weighted premultiplied colors. The fixed pane selects
@@ -83,6 +88,19 @@ layout, or preservation of displaced folders and shortcuts.
 
 Tests were not run for the 0.6.2 frost, sensor-settling, and Dock changes. Neither
 reference fidelity nor Android GPU performance has been verified for that model.
+
+## Historical 0.6.4 sharp-source mixture and build
+
+The 0.6.4 graph blended `[0, R/9, R/3, R]` by variance. For `R = 72` and wanted
+sigma 3, its first pair was 0 and 8, giving the sharp source weight
+`1 - 3^2 / 8^2 = 0.859375`. This arithmetic explains how variance matching can
+retain a sharp letter stroke, which strong projection can stretch into a long
+line; it is not a new pixel or device measurement. The finer 0.6.5 stops target
+that mixture. They do not restore the removed projection gain.
+
+`:app:assembleDebug` completed for 0.6.4 (version code 11) on 2026-09-26 in
+36 seconds. It covered APK compilation and packaging; no tests or physical-device
+checks were run for that revision. This historical build does not validate 0.6.5.
 
 ## Historical 0.6.3 menus and build
 
@@ -128,8 +146,9 @@ level. The checks cover opacity preservation, fixed-pane sharpness, moving-pane
 frost without mistaking black output for blur, and unchanged endpoint pixels.
 That run's diagnostics were written under `build/live-shader-report/`. Those
 32 passing states describe the earlier model and do not validate the current renderer. The
-fixture has been updated for the new angle mapping, eye ratios, material motion,
-and native blur conversion, but it has not been run for this revision.
+fixture has been updated for the current angle mapping, eye ratios, material
+motion, native blur conversion, and up-to-six-level `radiusStops` inputs, but
+it has not been run for this revision.
 
 ```powershell
 python tools/check_live_shader.py build/live-shader-report

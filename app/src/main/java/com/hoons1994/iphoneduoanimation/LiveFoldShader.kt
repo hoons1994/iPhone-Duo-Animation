@@ -19,21 +19,24 @@ internal object LiveFoldShader {
         uniform float hingeAxisY;
         uniform float hingeFromEnd;
         uniform float level;
+        uniform float3 radiusStops;
 
         float levelWeight(float radius) {
-            // Native levels represent Gaussian standard deviations. Interpolate
-            // their variances: linear-radius mixing over-blurs small radii near
-            // the hinge (e.g. sigma 1 mixed from 0 and 8 would become sqrt(8)).
-            float normalized = clamp(radius / max(maxBlurPx, 0.001), 0.0, 1.0);
-            float r = normalized * normalized;
-            float a = 1.0 / 81.0;
-            float b = 1.0 / 9.0;
-            if (level < 0.5) return 1.0 - clamp(r / a, 0.0, 1.0);
-            if (level < 1.5) return r < a ? r / a :
-                1.0 - clamp((r - a) / (b - a), 0.0, 1.0);
-            if (level < 2.5) return r < b ? clamp((r - a) / (b - a), 0.0, 1.0) :
-                1.0 - clamp((r - b) / (1.0 - b), 0.0, 1.0);
-            return clamp((r - b) / (1.0 - b), 0.0, 1.0);
+            // Neighboring native Gaussian levels are blended by variance.
+            // The first positive stop is <= 1 source pixel, so larger radii
+            // contain no sharp delta that could turn text into long streaks.
+            float r = radius * radius;
+            float3 variance = radiusStops * radiusStops;
+            if (level < 0.5) {
+                return 1.0 - clamp(r / max(variance.z, 0.000001), 0.0, 1.0);
+            }
+            float rising = clamp((r - variance.x) /
+                max(variance.y - variance.x, 0.000001), 0.0, 1.0);
+            // The last level repeats its own radius as its upper stop.
+            if (radiusStops.z <= radiusStops.y) return rising;
+            float falling = 1.0 - clamp((r - variance.y) /
+                max(variance.z - variance.y, 0.000001), 0.0, 1.0);
+            return min(rising, falling);
         }
 
         half4 main(float2 p) {
@@ -91,29 +94,27 @@ internal object LiveFoldShader {
 
 /** GPU-only filter graph. No Bitmap, readback, capture worker, or cached home image. */
 internal class LiveFoldEffects {
-    private val shaders = Array(4) { RuntimeShader(LiveFoldShader.SOURCE) }
+    private val shaders = Array(DuoFoldModel.MAX_BLUR_LEVEL_COUNT) { RuntimeShader(LiveFoldShader.SOURCE) }
     private var cachedBlurRadius = -1f
-    private var blurs = arrayOfNulls<RenderEffect>(4)
+    private var radii = FloatArray(0)
+    private var blurs = arrayOfNulls<RenderEffect>(0)
 
     fun create(geometry: LiveFoldGeometry): RenderEffect {
         if (cachedBlurRadius != geometry.maxBlurPx) {
             cachedBlurRadius = geometry.maxBlurPx
-            blurs = arrayOf(null, blur(cachedBlurRadius / 9f),
-                blur(cachedBlurRadius / 3f), blur(cachedBlurRadius))
+            radii = DuoFoldModel.blurLevels(cachedBlurRadius)
+            blurs = Array(radii.size) { index -> if (index == 0) null else blur(radii[index]) }
         }
         var combined: RenderEffect? = null
         // The material envelope is largest at the outer edge (edge == 1).
         // Projection changes sample positions, not the source blur radius.
         val reachableRadius = geometry.maxBlurPx * geometry.motion
-        shaders.forEachIndexed { index, shader ->
+        radii.forEachIndexed { index, radius ->
             // A branch that is transparent everywhere must not run its native
             // blur pass, especially during the long, almost-clear fold tail.
-            val lowerRadius = when (index) {
-                2 -> geometry.maxBlurPx / 9f
-                3 -> geometry.maxBlurPx / 3f
-                else -> 0f
-            }
+            val lowerRadius = radii[(index - 1).coerceAtLeast(0)]
             if (index > 0 && reachableRadius <= lowerRadius) return@forEachIndexed
+            val shader = shaders[index]
             shader.setFloatUniform("resolution", geometry.width.toFloat(), geometry.height.toFloat())
             shader.setFloatUniform("coverSurface", if (geometry.cover) 1f else 0f)
             shader.setFloatUniform("foldCos", geometry.foldCos)
@@ -124,6 +125,8 @@ internal class LiveFoldEffects {
             shader.setFloatUniform("hingeAxisY", if (geometry.axisY) 1f else 0f)
             shader.setFloatUniform("hingeFromEnd", if (geometry.hingeFromEnd) 1f else 0f)
             shader.setFloatUniform("level", index.toFloat())
+            shader.setFloatUniform("radiusStops", lowerRadius, radius,
+                radii[(index + 1).coerceAtMost(radii.lastIndex)])
             // RenderEffect snapshots the shader builder. Recreate the effect
             // after changing uniforms; reusing it would freeze the old angle.
             val projection = RenderEffect.createRuntimeShaderEffect(shader, "content")
