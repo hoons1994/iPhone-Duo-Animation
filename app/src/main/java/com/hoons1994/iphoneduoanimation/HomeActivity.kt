@@ -1373,7 +1373,7 @@ class HomeActivity : Activity() {
         drawerClosing = false
         val apps = launcherActivities()
         val adapter = LauncherActivityAdapter(apps)
-        val overlay = LiquidGlassPanel(this, wallpaperView, cornerRadiusDp = 32f, strong = true).apply {
+        val overlay = LiquidGlassPanel(this, wallpaperView, cornerRadiusDp = 0f, strong = true).apply {
             isClickable = true
             isFocusableInTouchMode = true
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES

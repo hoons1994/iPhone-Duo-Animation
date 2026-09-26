@@ -20,7 +20,8 @@ launcher's icon and widget layout is not accessible as a transferable launcher
 database and is not copied.
 
 The search pill opens the app drawer inside the home view tree, so the drawer
-participates in the live fold effect. App, widget, and wallpaper creation actions
+participates in the live fold effect. In 0.6.4, its `LiquidGlassPanel` has zero
+outer corner radius and fills the viewport as a rectangle. App, widget, and wallpaper creation actions
 appear in edit mode. Wallpaper selection uses `ACTION_OPEN_DOCUMENT` and a
 persisted grant for the chosen URI; decoding is bounded and performed off the
 UI thread. The user can restore the default background. This requires access
@@ -100,8 +101,9 @@ current `RenderNode` contents, including ordinary child views, as the shader
 input. Launcher redraws and widget updates can therefore reach the folded pane
 without waiting for an app-managed snapshot refresh.
 
-Version 0.6.3 retains the 0.6.2 AGSL and fold animation implementation; its new
-menus use the existing live view tree. The renderer uses `DuoFoldModel`, independently of the legacy
+Version 0.6.4 changes the live frost envelope and blur-level interpolation while
+retaining fold timing, projection geometry, and the maximum outer-edge blur.
+The renderer uses `DuoFoldModel`, independently of the legacy
 `TransitionTuning` snapshot model. Given hinge angle `h`, cover bend is `h` and
 inner bend is `180 - h`. Neither a learned display-switch angle nor a change of
 opening/closing direction changes this mapping. `LiveFoldGeometry` shares the
@@ -119,27 +121,28 @@ computes `motion = smoothstep(0, 1, clamp(bend / 90, 0, 1))` and scales frost
 by `motion * pow(edge, 1.35)`, where `edge` is distance from the hinge normalized
 by moving-pane width. Darkening uses a similar outward envelope. Keeping these
 values in pane coordinates prevents the historical loss of frost when texture
-coordinates compress near edge-on projection.
+coordinates compress near edge-on projection. This follows the Classic Android
+adaptation; the browser study in `main.js` measures its gradient in projected
+`sourceUV` coordinates, so the two implementations are not identical.
 
-Version 0.6.2 adds local projection compensation to the frost radius. Along
-the moving pane, the source-coordinate derivative is
-`J = cos(angle) / (1 - gap / eyeDistance)^2`. The radius is multiplied by
-`max(1, 1 / J)` and capped at the existing `maxBlurPx`. This targets the wide,
-readable strip that can result when a narrow source region is strongly
-magnified near the 87.3-degree projection limit. The compensation is a Duo Home
-adaptation; it is not the original reference shader's frost model and does not
-introduce another angle cap. Its appearance on hardware remains unverified.
+The current radius is `maxBlurPx * motion * pow(edge, 1.35)`. The extra
+`max(1, 1 / J)` projection-magnification gain from 0.6.2/0.6.3 was removed in
+0.6.4. Source-space blur already expands through the projection; multiplying
+its radius again added excess near-hinge blur. That extra gain was a Duo Home
+adaptation and is absent from the inspected reference formulas.
 
 `LiveFoldEffects` supplies sharp content and three native Gaussian levels whose
 target source-space blur radii are one ninth, one third, and the full maximum.
 It converts each target to Android's native radius using
 `max(0.01, (targetRadius - 0.5) / 0.57735)`. This approximates the variance of the
 reference 5x5 binomial footprint; native filtering and interpolation do not
-reproduce that kernel exactly. `LiveFoldShader` interpolates adjacent levels
-and adds weighted premultiplied colors. The fixed inner pane stays on the sharp
-branch. Branches that cannot contribute are omitted using a bound that includes
-the possible projection magnification, so compensation can reach stronger blur
-levels when needed.
+reproduce that kernel exactly. In 0.6.4, `LiveFoldShader` chooses adjacent-level
+weights from `(radius / maxBlurPx)^2` using variance boundaries
+`0, 1/81, 1/9, 1`. Mixing these variances preserves the requested second moment
+more closely than mixing the radii; the resulting mixture is still an
+approximation, not a single exact Gaussian or the reference kernel. The shader
+adds weighted premultiplied colors. The fixed inner pane stays on the sharp
+branch, and unreachable levels are pruned using `maxBlurPx * motion`.
 
 The launcher path does not call `View.draw()` into a bitmap, read pixels back
 to the CPU, generate cached mipmaps, or schedule idle captures. Android still
@@ -216,13 +219,15 @@ display geometry → view reflow + display classification (independent of optica
 ## Device validation still required
 
 The previous 0.6.0 implementation passed 56 JVM tests and 32 desktop Skia pixel
-states across four rotations. Versions 0.6.1 and 0.6.2 later completed APK builds.
-These are historical results. Version 0.6.3 also compiled and packaged successfully; tests and device
-interaction checks have not been run for its glass menus and input behavior.
+states across four rotations. Versions 0.6.1–0.6.3 later completed APK builds.
+These are historical results. The 0.6.4 APK build completed on 2026-09-26;
+tests and device interaction checks have not been run for its restored frost envelope,
+variance interpolation, or rectangular app drawer.
 Desktop checks cannot
 execute Android's `RenderEffect` graph, validate glass-panel appearance, or
 measure device performance. Android GPU instrumentation remains unrun; no ADB
 device or emulator was available during the earlier checks.
+AGSL is compiled at runtime, so the APK build does not validate its GPU execution.
 
 APK compilation does not establish widget-provider compatibility, physical
 display handoff timing, blur composition, or GPU frame pacing. Native live blur

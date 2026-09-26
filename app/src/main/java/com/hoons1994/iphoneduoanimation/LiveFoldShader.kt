@@ -21,9 +21,13 @@ internal object LiveFoldShader {
         uniform float level;
 
         float levelWeight(float radius) {
-            float r = clamp(radius / max(maxBlurPx, 0.001), 0.0, 1.0);
-            float a = 1.0 / 9.0;
-            float b = 1.0 / 3.0;
+            // Native levels represent Gaussian standard deviations. Interpolate
+            // their variances: linear-radius mixing over-blurs small radii near
+            // the hinge (e.g. sigma 1 mixed from 0 and 8 would become sqrt(8)).
+            float normalized = clamp(radius / max(maxBlurPx, 0.001), 0.0, 1.0);
+            float r = normalized * normalized;
+            float a = 1.0 / 81.0;
+            float b = 1.0 / 9.0;
             if (level < 0.5) return 1.0 - clamp(r / a, 0.0, 1.0);
             if (level < 1.5) return r < a ? r / a :
                 1.0 - clamp((r - a) / (b - a), 0.0, 1.0);
@@ -57,14 +61,10 @@ internal object LiveFoldShader {
             if (depth <= 0.001) {
                 return level < 0.5 ? half4(0.0, 0.0, 0.0, 1.0) : half4(0.0);
             }
-            // The source-coordinate derivative along the pane is
-            // J = cos(angle) / (1 - gap / eyeDistance)^2. Near edge-on, 1/J
-            // can exceed 20: weakly blurred text becomes a wide readable stripe.
-            // Compensate frost by this local magnification, bounded by the live
-            // blur pyramid. This is a launcher adaptation, not a new angle cap.
-            float relativeDepth = depth / eyeDistancePx;
-            float magnification = max(1.0, relativeDepth * relativeDepth / max(foldCos, 0.001));
-            float radius = min(maxBlurPx, maxBlurPx * motionAmount * pow(edge, 1.35) * magnification);
+            // ClassicGlassShader's source-space material radius. Projection
+            // already stretches this blur along the pane; multiplying by its
+            // magnification again saturated even the region next to the hinge.
+            float radius = maxBlurPx * motionAmount * pow(edge, 1.35);
             half weight = half(levelWeight(radius));
             if (weight <= 0.0) return half4(0.0);
 
@@ -102,10 +102,9 @@ internal class LiveFoldEffects {
                 blur(cachedBlurRadius / 3f), blur(cachedBlurRadius))
         }
         var combined: RenderEffect? = null
-        // Magnification is at most 1/cos(angle); the previous material-only
-        // bound could now skip a blur branch that has a nonzero contribution.
-        val reachableRadius = minOf(geometry.maxBlurPx,
-            geometry.maxBlurPx * geometry.motion / geometry.foldCos.coerceAtLeast(0.001f))
+        // The material envelope is largest at the outer edge (edge == 1).
+        // Projection changes sample positions, not the source blur radius.
+        val reachableRadius = geometry.maxBlurPx * geometry.motion
         shaders.forEachIndexed { index, shader ->
             // A branch that is transparent everywhere must not run its native
             // blur pass, especially during the long, almost-clear fold tail.

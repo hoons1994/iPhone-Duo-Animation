@@ -1,22 +1,21 @@
 # Live blur architecture and historical regression evidence
 
-## Current 0.6.3 scope
+## Current 0.6.4 scope
 
-Version 0.6.3 (version code 10) changes launcher-owned menus and input behavior.
-`GlassActionOverlay` unifies shortcut, Dock, folder, widget, app-drawer, and
-wallpaper action panels inside the live home view tree. A normal shortcut long
-press opens a menu; a long press in home edit mode starts dragging. Android and
-widget-provider selection, permission, and configuration screens remain system
-UI. This revision does not change AGSL or the fold animation implementation.
+Version 0.6.4 (version code 11) restores the Classic Android material-space frost
+radius, removes the extra projection-magnification gain, and blends native
+Gaussian levels by variance. The app drawer now fills the viewport with a
+rectangular outer boundary. Fold timing, projection geometry, and maximum
+outer-edge blur remain unchanged.
 
-`:app:assembleDebug` completed successfully for 0.6.3 on 2026-09-26. This covers
-APK compilation and packaging. No tests or physical-device checks have been run for
-this revision. Existing shader diagnostics do not verify menu placement, keyboard
-insets, dismissal and follow-up actions, accessibility focus restoration, or
-normal/edit-mode input behavior. Android GPU execution and reference fidelity
-also remain unverified.
+`:app:assembleDebug` completed successfully for 0.6.4 (version code 11) on
+2026-09-26 in 36 seconds. This covers APK compilation and packaging. No tests or
+physical-device checks have been run for this revision. AGSL compiles at runtime,
+so the build does not validate the new shader on an Android GPU. Existing results
+do not verify the new blur weights or drawer appearance. Android GPU execution,
+frame pacing, and reference fidelity remain unverified.
 
-## Fold renderer retained from 0.6.2
+## Current fold renderer
 
 `HomeActivity` now renders its current view tree through `LiveFoldLayout` and
 Android's `RenderEffect` input. `LiveFoldEffects` supplies four live levels:
@@ -39,15 +38,18 @@ compress. The geometry draws on
 the projection cap and material-space envelope follow
 [`ClassicGlassShader.kt`](https://github.com/joeconsorti/duo-fold-live/blob/main/app/src/main/java/org/duofold/live/ClassicGlassShader.kt).
 
-The 0.6.2 shader then compensates for local projection magnification. With
-`depth = eyeDistance - gap`, it multiplies the material radius by
-`max(1, (depth / eyeDistance)^2 / max(cos(angle), 0.001))` and clamps the result
-to `maxBlurPx`. This is the reciprocal source-coordinate derivative along the
-pane, bounded below by one. It targets readable stripes caused by expanding a
-narrow source region near the edge-on projection limit. The branch-pruning bound
-also includes this magnification, so a required stronger blur level is not
-discarded. This compensation is a launcher-specific adaptation, not a formula
-copied from the reference shader, and its visual result has not been measured.
+The radius is used directly, with no additional `1/J` projection gain. The
+browser `main.js` computes its frost gradient from projected `sourceUV`, while
+`ClassicGlassShader` uses coordinates on the pane. Duo Home follows the latter
+envelope; it does not reproduce the browser gradient exactly.
+
+The native blur levels represent target radii `0, R/9, R/3, R`. Version 0.6.4
+interpolates their variance using normalized squared radius and boundaries
+`0, 1/81, 1/9, 1`. Linear-radius mixing had weighted the broader blur too heavily
+for small requested radii near the hinge. This second-moment interpolation is
+our live Gaussian approximation, not a reference shader formula or an exact
+reproduction of its binomial and mip filtering. The reachable-radius bound is
+again `R * motion`, so branches are omitted only outside the material envelope.
 
 The shader projects each level through the same glass geometry, interpolates
 adjacent levels, and adds weighted premultiplied colors. The fixed pane selects
@@ -81,6 +83,25 @@ layout, or preservation of displaced folders and shortcuts.
 
 Tests were not run for the 0.6.2 frost, sensor-settling, and Dock changes. Neither
 reference fidelity nor Android GPU performance has been verified for that model.
+
+## Historical 0.6.3 menus and build
+
+Version 0.6.3 (version code 10) introduced `GlassActionOverlay` for shortcut,
+Dock, folder, widget, app-drawer, and wallpaper action panels. It kept the
+0.6.2 fold renderer. `:app:assembleDebug` completed on 2026-09-26, covering APK
+compilation and packaging. No tests or physical-device checks were run for its
+menus and input changes. That build predates the 0.6.4 renderer and drawer changes.
+
+## Removed 0.6.2/0.6.3 projection gain
+
+Those revisions multiplied the material radius by
+`max(1, (depth / eyeDistance)^2 / max(cos(angle), 0.001))`, then clamped it to `R`.
+The rationale was to obscure readable stripes magnified near edge-on projection.
+The native source blur was already stretched by that projection, so the extra
+gain applied magnification twice and produced excessive near-hinge blur. This
+Duo Home addition was not present in the inspected `main.js` or
+`ClassicGlassShader` radius formulas and was removed in 0.6.4. No passing pixel
+or hardware result is recorded for that gain.
 
 ## Historical 0.6.2 build
 
@@ -153,7 +174,7 @@ with a 45-degree virtual tilt cap and a density-aware 320 mm eye distance. Blur
 and attenuation follow the glass-to-plane gap while perspective lookup follows
 the ray intersection. This replaces the fixed model dimensions and 90-degree
 collapse that stretched launcher widgets. This remains in the legacy
-`TransitionTuning`/snapshot path and does not describe the 0.6.2 live model.
+`TransitionTuning`/snapshot path and does not describe the current live model.
 It follows the physical model in
 [Atomicx7's shader](https://github.com/Atomicx7/Duo-animation/blob/master/app/src/main/res/raw/duo_fold.agsl)
 and its two-pane Android adaptation in

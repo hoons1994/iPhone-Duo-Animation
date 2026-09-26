@@ -11,8 +11,9 @@ renders Duo Home's current views directly through Android's graphics pipeline.
    you to confirm the default home app.
 3. Tap the **앱 검색** pill to open the app drawer. Search or browse its icon
    grid, tap an app to open it, or long-press for actions to pin it, add it to
-   the Dock, or open app info. The drawer is part of the home view tree and
-   follows the same fold effect.
+   the Dock, or open app info. The drawer is a full-viewport rectangle with no
+   rounded outer corners. It is part of the home view tree and follows the same
+   fold effect.
 4. Tap **편집** to show **홈에 앱 추가**, **위젯 추가**, and **배경화면**.
    App selection stays open while you pin several apps. Choose a photo for the
    home wallpaper through Android's document picker, or restore Duo's default
@@ -51,21 +52,19 @@ physical hinge → filtered angle → per-frame transition
   supplies the current view and child contents, so clock and widget updates can
   remain visible while folding. There is no app-managed bitmap capture, readback,
   idle capture timer, or mipmap worker in the home rendering path.
-- Version 0.6.3 retains the 0.6.2 fold renderer; this update changes launcher
-  menus and interaction, without changing AGSL or the fold animation model.
-  `DuoFoldModel` maps the physical hinge angle directly: the cover
+- `DuoFoldModel` maps the physical hinge angle directly: the cover
   bends by that angle, and the inner pane bends by 180 degrees minus that
   angle. Display handoff estimates and opening/closing direction do not remap
   the optical pose. Projection alone is capped at 87.3 degrees to avoid collapse
   at the edge-on position; frost still reaches its full envelope at 90 degrees.
-- Four live levels—sharp plus three native Gaussian blurs—are interpolated from
-  the bend and position on the pane. Frost increases away from the hinge even
-  when projected image coordinates compress. Native Gaussian radii approximate
-  the reference binomial kernel's variance; the filters are not identical.
-- Version 0.6.2 increases local frost where projection stretches a narrow source
-  region into a wide strip, bounded by the existing maximum blur. This is a
-  launcher-specific adaptation intended to suppress readable streaks near the
-  edge-on position; it is not part of the reference shader's frost formula.
+- Version 0.6.4 restores the Android reference's material-space frost envelope,
+  `maxBlur * motion * edge^1.35`, and removes the extra projection-magnification
+  multiplier added in 0.6.2. Source blur is already stretched by projection;
+  the added multiplier caused excessive blur near the hinge.
+- Four live levels—sharp plus three native Gaussian blurs—are blended by their
+  variance (squared radius), reducing excess blur when mixing small radii near
+  the hinge. This is Duo Home's approximation of the reference binomial filter.
+  Fold timing, projection geometry, and the outer-edge maximum blur are unchanged.
 - A short frame follower bridges sensor updates. Resolved endpoints remove the
   effect, and fold frame callbacks stop once the angle settles. Configuration
   changes resize the existing icons and widget hosts rather than reloading
@@ -85,6 +84,8 @@ The search pill, Dock, and app drawer use `LiquidGlassPanel`: a blurred,
 wallpaper-aligned backdrop beneath crisp icons and text, with translucent tint
 and a light rim. Small controls use a matching tint and rim. The setup screen
 keeps solid, readable cards and capsule actions.
+The 0.6.4 drawer fills the viewport with a rectangular, unrounded boundary; its glass
+backdrop and internal controls remain part of the launcher.
 
 In 0.6.3, `GlassActionOverlay` gives app shortcuts, Dock editing, folders,
 widget settings, app-drawer actions, and wallpaper actions the same glass menu
@@ -119,9 +120,9 @@ The panels reuse the launcher's wallpaper source without capturing the screen.
   widget updates during folding, and frame pacing need evaluation on a Fold
   device; removing bitmap capture does not establish a performance improvement.
 - Version 0.6.0 passed 56 JVM tests and 32 desktop shader pixel states. Those are
-  historical results; versions 0.6.1 and 0.6.2 subsequently built APKs. Version
-  0.6.3 also compiled and packaged successfully. Tests and device interaction checks have
-  not been run for its glass menus and input changes. Android GPU tests and physical-device
+  historical results; versions 0.6.1–0.6.3 subsequently built APKs. Version 0.6.4
+  also compiled and packaged successfully, but no tests or device interaction checks have been run for its
+  blur interpolation and drawer-boundary changes. Android GPU tests and physical-device
   fidelity remain unverified; no ADB device or emulator was available in the
   earlier checks. See [`docs/blur-validation.md`](docs/blur-validation.md).
 
@@ -134,5 +135,7 @@ The live view input follows Android's
 The current optical and frost model draws on
 [`iphone-duo/main.js`](https://github.com/chuspeeism/iphone-duo/blob/main/main.js)
 and [`ClassicGlassShader.kt`](https://github.com/joeconsorti/duo-fold-live/blob/main/app/src/main/java/org/duofold/live/ClassicGlassShader.kt).
+Their frost gradients differ: the browser study uses projected source UVs;
+the Classic Android adaptation uses pane coordinates, as Duo Home does.
 
 Architecture notes: [`docs/architecture.md`](docs/architecture.md).
