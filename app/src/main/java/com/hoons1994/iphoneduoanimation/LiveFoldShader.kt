@@ -15,8 +15,7 @@ internal object LiveFoldShader {
         uniform float foldSin;
         uniform float eyeDistancePx;
         uniform float maxBlurPx;
-        uniform float blurSpread;
-        uniform float darkening;
+        uniform float motionAmount;
         uniform float hingeAxisY;
         uniform float hingeFromEnd;
         uniform float level;
@@ -49,13 +48,18 @@ internal object LiveFoldShader {
             float distance = coverSurface > 0.5 ? axis : hinge - axis;
             float glassAxis = coverSurface > 0.5 ? distance * foldCos : hinge - distance * foldCos;
             float gap = max(0.0, distance * foldSin);
-            float radius = min(maxBlurPx, blurSpread * gap);
+            // Frost belongs to the physical pane, not the projected image.
+            // Keep the hinge clear and roll frost outward with the reference's
+            // eased envelope; near-edge-on projection cannot erase the blur.
+            float paneExtent = coverSurface > 0.5 ? axisExtent : axisExtent * 0.5;
+            float edge = clamp(distance / max(paneExtent, 1.0), 0.0, 1.0);
+            float radius = maxBlurPx * motionAmount * pow(edge, 1.35);
             half weight = half(levelWeight(radius));
             if (weight <= 0.0) return half4(0.0);
 
             float depth = eyeDistancePx - gap;
             if (depth <= 0.001) return half4(0.0, 0.0, 0.0, weight);
-            float eyeAxis = coverSurface > 0.5 ? axisExtent * 0.5 : hinge;
+            float eyeAxis = hinge;
             float perspective = eyeDistancePx / depth;
             float hitAxis = eyeAxis + (glassAxis - eyeAxis) * perspective;
             float hitAcross = acrossExtent * 0.5 + (across - acrossExtent * 0.5) * perspective;
@@ -68,7 +72,9 @@ internal object LiveFoldShader {
             float2 coverage = smoothstep(float2(-footprint), float2(footprint), source) *
                 (1.0 - smoothstep(resolution - footprint, resolution + footprint, source));
             half4 color = content.eval(clamp(source, float2(0.5), resolution - 0.5));
-            half attenuation = half(max(1.0 - darkening * radius, 0.0) * coverage.x * coverage.y);
+            float darkenEdge = clamp((edge - 0.2) / 0.8, 0.0, 1.0);
+            float shade = 1.0 - min(1.0, 2.0 * motionAmount * pow(darkenEdge, 1.35));
+            half attenuation = half(shade * coverage.x * coverage.y);
             return half4(color.rgb * attenuation, color.a) * weight;
         }
     """
@@ -87,8 +93,7 @@ internal class LiveFoldEffects {
                 blur(cachedBlurRadius / 3f), blur(cachedBlurRadius))
         }
         var combined: RenderEffect? = null
-        val reachableRadius = minOf(geometry.maxBlurPx, TransitionTuning.REFERENCE_BLUR_SPREAD *
-            geometry.axisExtent * (if (geometry.cover) 1f else 0.5f) * geometry.foldSin)
+        val reachableRadius = geometry.maxBlurPx * geometry.motion
         shaders.forEachIndexed { index, shader ->
             // A branch that is transparent everywhere must not run its native
             // blur pass, especially during the long, almost-clear fold tail.
@@ -104,8 +109,7 @@ internal class LiveFoldEffects {
             shader.setFloatUniform("foldSin", geometry.foldSin)
             shader.setFloatUniform("eyeDistancePx", geometry.eyeDistancePx)
             shader.setFloatUniform("maxBlurPx", geometry.maxBlurPx)
-            shader.setFloatUniform("blurSpread", TransitionTuning.REFERENCE_BLUR_SPREAD)
-            shader.setFloatUniform("darkening", geometry.darkening)
+            shader.setFloatUniform("motionAmount", geometry.motion)
             shader.setFloatUniform("hingeAxisY", if (geometry.axisY) 1f else 0f)
             shader.setFloatUniform("hingeFromEnd", if (geometry.hingeFromEnd) 1f else 0f)
             shader.setFloatUniform("level", index.toFloat())
@@ -120,6 +124,8 @@ internal class LiveFoldEffects {
         return requireNotNull(combined)
     }
 
-    private fun blur(radius: Float) =
-        RenderEffect.createBlurEffect(radius.coerceAtLeast(0.01f), radius.coerceAtLeast(0.01f), Shader.TileMode.CLAMP)
+    private fun blur(radius: Float): RenderEffect {
+        val nativeRadius = DuoFoldModel.nativeBlurRadius(radius)
+        return RenderEffect.createBlurEffect(nativeRadius, nativeRadius, Shader.TileMode.CLAMP)
+    }
 }

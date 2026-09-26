@@ -60,9 +60,8 @@ class LiveFoldGeometryTest {
     }
 
     @Test
-    fun projectionBehindEye_isRejected() {
+    fun fullyDarkGlass_doesNotActivateHiddenContent() {
         val geometry = geometry(rotation = 0, cover = true, angle = 98f)
-            .copy(pixelsPerMm = 0.1f)
         assertNull(geometry.sourcePoint(1000f, 900f))
     }
 

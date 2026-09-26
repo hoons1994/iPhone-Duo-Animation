@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.app.ActivityOptions
 import android.appwidget.AppWidgetHost
+import android.appwidget.AppWidgetHostView
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProviderInfo
 import android.content.ComponentName
@@ -32,6 +33,7 @@ import android.view.Gravity
 import android.view.DragEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.WindowInsets
 import android.view.MotionEvent
@@ -89,6 +91,7 @@ class HomeActivity : Activity() {
     private var latestRawProgress = Float.NaN
     private var latestOpening = true
     private var awaitingHingeSample = true
+    private var homeStarted = false
     private var lastSignalAtMs = 0L
     private var previousCoverSurface: Boolean? = null
     private var widgetListening = false
@@ -108,6 +111,9 @@ class HomeActivity : Activity() {
     private var loadedWallpaperKey: String? = null
     private var loadingWallpaperKey: String? = null
     private var pendingWallpaperUri: Uri? = null
+    private var homeReflowListener: ViewTreeObserver.OnPreDrawListener? = null
+    private var homeReflowPage: Int? = null
+    private val widgetOptionWidths = HashMap<Int, Int>()
 
     private data class PinnedShortcut(val component: String, val page: Int)
     private data class WidgetPlacement(val id: Int, val page: Int, val heightDp: Int = 0)
@@ -117,6 +123,7 @@ class HomeActivity : Activity() {
     private val hingeMonitor by lazy {
         HingeAngleMonitor(this) { signal ->
             runOnUiThread {
+                if (!homeStarted || awaitingHingeSample && !signal.isSensorSample) return@runOnUiThread
                 latestProgress = signal.filteredProgress
                 latestOpening = signal.opening
                 if (signal.isSensorSample) {
@@ -126,7 +133,12 @@ class HomeActivity : Activity() {
                 homeContent.setHandoffProgress(handoffCalibrator.estimate(signal.opening))
                 homeContent.updateProgress(signal.filteredProgress, signal.opening,
                     interpolate = !awaitingHingeSample)
-                awaitingHingeSample = false
+                if (awaitingHingeSample) {
+                    // Install the first fresh pose before allowing a frame.
+                    // Resuming must never render the angle from before stop().
+                    awaitingHingeSample = false
+                    homeContent.setRenderingActive(true)
+                }
             }
         }
     }
@@ -156,6 +168,11 @@ class HomeActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        homeStarted = true
+        awaitingHingeSample = true
+        lastSignalAtMs = 0L
+        latestRawProgress = Float.NaN
+        homeContent.setRenderingActive(false)
         startClock()
         renderShortcuts()
         wallpaperView.post { refreshWallpaper() }
@@ -164,26 +181,17 @@ class HomeActivity : Activity() {
             widgetListening = runCatching { widgetHost.startListening(); true }.getOrDefault(false)
             renderWidgets()
         }
-        awaitingHingeSample = true
-        homeContent.setRenderingActive(true)
         hingeMonitor.start()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        if (::shortcutGrids.isInitialized) {
-            renderShortcuts()
-            horizontalPager.post {
-                updatePageWidths()
-                renderShortcuts()
-                horizontalPager.scrollTo(currentPage * horizontalPager.width, 0)
-                updatePageIndicator(currentPage)
-            }
-        }
+        // A fold changes the viewport while the shader is moving. Reuse the
+        // displayed icons and widget hosts instead of loading/inflating them
+        // again on the handoff frame.
+        scheduleHomeReflow()
         drawerGrid?.numColumns = drawerColumnCount()
-        renderWidgets()
         wallpaperView.post { refreshWallpaper() }
-        refreshGlassPanels()
         if (::homeContent.isInitialized) homeContent.refreshGeometry()
     }
 
@@ -207,6 +215,7 @@ class HomeActivity : Activity() {
     }
 
     override fun onStop() {
+        homeStarted = false
         stopClock()
         hingeMonitor.stop()
         homeContent.setRenderingActive(false)
@@ -219,6 +228,10 @@ class HomeActivity : Activity() {
 
     override fun onDestroy() {
         stopClock()
+        homeReflowListener?.let { listener ->
+            homeContent.viewTreeObserver.takeIf { it.isAlive }?.removeOnPreDrawListener(listener)
+        }
+        homeReflowListener = null
         wallpaperGeneration++
         wallpaperExecutor.shutdownNow()
         onBackInvokedDispatcher.unregisterOnBackInvokedCallback(homeBackCallback)
@@ -358,7 +371,12 @@ class HomeActivity : Activity() {
             isFillViewport = true
             overScrollMode = View.OVER_SCROLL_NEVER
             setOnScrollChangeListener { _, scrollX, _, _, _ ->
-                if (width > 0) updatePageIndicator((scrollX + width / 2) / width)
+                if (width > 0 && homeReflowPage == null) {
+                    updatePageIndicator((scrollX + width / 2) / width)
+                }
+            }
+            addOnLayoutChangeListener { _, left, _, right, _, oldLeft, _, oldRight, _ ->
+                if (right - left != oldRight - oldLeft) scheduleHomeReflow()
             }
         }
         pageStrip = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -504,11 +522,7 @@ class HomeActivity : Activity() {
         }
         setContentView(root)
         column.requestApplyInsets()
-        horizontalPager.post {
-            updatePageWidths()
-            horizontalPager.scrollTo(currentPage * horizontalPager.width, 0)
-            updatePageIndicator(currentPage)
-        }
+        scheduleHomeReflow()
     }
 
     private fun actionButton(label: String, onClick: () -> Unit): Button = Button(this).apply {
@@ -578,13 +592,78 @@ class HomeActivity : Activity() {
         }
     }
 
-    private fun updatePageWidths() {
-        if (!::horizontalPager.isInitialized || horizontalPager.width <= 0) return
+    private fun updatePageWidths(): Boolean {
+        if (!::horizontalPager.isInitialized || horizontalPager.width <= 0) return false
+        var changed = false
         for (index in 0 until pageStrip.childCount) {
             val child = pageStrip.getChildAt(index)
-            child.layoutParams = child.layoutParams.apply { width = horizontalPager.width }
+            if (child.layoutParams.width != horizontalPager.width) {
+                child.layoutParams = child.layoutParams.apply { width = horizontalPager.width }
+                changed = true
+            }
         }
-        pageStrip.requestLayout()
+        return changed
+    }
+
+    private fun scheduleHomeReflow() {
+        if (!::shortcutGrids.isInitialized || homeReflowListener != null) return
+        homeReflowPage = currentPage
+        val listener = object : ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                if (horizontalPager.width <= 0) return true
+                val pagesChanged = updatePageWidths()
+                val shortcutsChanged = reflowShortcuts()
+                // LayoutParams changed after measure. Draw after the next
+                // layout, so a frame never contains old-width home pages.
+                if (pagesChanged || shortcutsChanged) return false
+                val page = homeReflowPage ?: currentPage
+                horizontalPager.scrollTo(page * horizontalPager.width, 0)
+                updatePageIndicator(page)
+                homeContent.viewTreeObserver.removeOnPreDrawListener(this)
+                homeReflowListener = null
+                homeReflowPage = null
+                homeContent.post { updateHostedWidgetWidths() }
+                return true
+            }
+        }
+        homeReflowListener = listener
+        homeContent.viewTreeObserver.addOnPreDrawListener(listener)
+        homeContent.invalidate()
+    }
+
+    private fun reflowShortcuts(): Boolean {
+        val columns = drawerColumnCount()
+        val cellWidth = (horizontalPager.width / columns - dp(6)).coerceAtLeast(dp(54))
+        var changed = false
+        shortcutGrids.forEach { grid ->
+            val columnsChanged = grid.columnCount != columns
+            if (columnsChanged) {
+                // Clear auto-placement spans before reducing the column count.
+                // The existing Views (including icons and listeners) stay attached.
+                for (index in 0 until grid.childCount) {
+                    val child = grid.getChildAt(index)
+                    child.layoutParams = (child.layoutParams as GridLayout.LayoutParams).apply {
+                        rowSpec = GridLayout.spec(GridLayout.UNDEFINED)
+                        columnSpec = GridLayout.spec(GridLayout.UNDEFINED)
+                    }
+                }
+                grid.columnCount = columns
+                changed = true
+            }
+            for (index in 0 until grid.childCount) {
+                val child = grid.getChildAt(index)
+                val emptyPage = child is TextView
+                val width = if (emptyPage) 0 else cellWidth
+                val params = child.layoutParams as GridLayout.LayoutParams
+                if (columnsChanged || params.width != width) {
+                    params.width = width
+                    if (emptyPage) params.columnSpec = GridLayout.spec(0, columns, 1f)
+                    child.layoutParams = params
+                    changed = true
+                }
+            }
+        }
+        return changed
     }
 
     private fun updatePageIndicator(page: Int) {
@@ -1478,6 +1557,7 @@ class HomeActivity : Activity() {
     private fun renderWidgets() {
         if (!::widgetStacks.isInitialized) return
         widgetStacks.forEach { it.removeAllViews() }
+        widgetOptionWidths.clear()
         val placements = widgetPlacements()
         val validPlacements = ArrayList<WidgetPlacement>()
         for (placement in placements) {
@@ -1492,13 +1572,7 @@ class HomeActivity : Activity() {
             val heightDp = (placement.heightDp.takeIf { it > 0 } ?: info.minHeight.coerceAtLeast(120))
                 .coerceIn(100, 600)
             val widthDp = (resources.configuration.screenWidthDp - 40).coerceAtLeast(240)
-            val options = Bundle().apply {
-                putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, widthDp)
-                putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, widthDp)
-                putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, heightDp)
-                putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, heightDp)
-            }
-            runCatching { widgetManager.updateAppWidgetOptions(placement.id, options) }
+            updateWidgetWidth(placement.id, widthDp, heightDp)
             val frame = FrameLayout(this).apply {
                 background = roundedBackground(0x660d1119, dp(20).toFloat())
                 clipToOutline = true
@@ -1524,6 +1598,33 @@ class HomeActivity : Activity() {
             )
         }
         if (validPlacements.size != placements.size) saveWidgetPlacements(validPlacements)
+    }
+
+    /** Keep RemoteViews and their current content alive across cover/inner resize. */
+    private fun updateHostedWidgetWidths() {
+        if (isDestroyed || !::widgetStacks.isInitialized) return
+        val widthDp = (resources.configuration.screenWidthDp - 40).coerceAtLeast(240)
+        widgetStacks.forEach { stack ->
+            for (index in 0 until stack.childCount) {
+                val frame = stack.getChildAt(index) as? FrameLayout ?: continue
+                val hostView = frame.getChildAt(0) as? AppWidgetHostView ?: continue
+                val heightDp = (frame.layoutParams.height / resources.displayMetrics.density)
+                    .roundToInt().coerceIn(100, 600)
+                updateWidgetWidth(hostView.appWidgetId, widthDp, heightDp)
+            }
+        }
+    }
+
+    private fun updateWidgetWidth(id: Int, widthDp: Int, heightDp: Int) {
+        if (widgetOptionWidths[id] == widthDp) return
+        val options = Bundle().apply {
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, widthDp)
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, widthDp)
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, heightDp)
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, heightDp)
+        }
+        runCatching { widgetManager.updateAppWidgetOptions(id, options) }
+            .onSuccess { widgetOptionWidths[id] = widthDp }
     }
 
     private fun showWidgetActions(placement: WidgetPlacement, heightDp: Int) {

@@ -46,12 +46,23 @@ physical hinge → filtered angle → per-frame transition
   supplies the current view and child contents, so clock and widget updates can
   remain visible while folding. There is no app-managed bitmap capture, readback,
   idle capture timer, or mipmap worker in the home rendering path.
-- Four live levels—sharp plus three native Gaussian blurs—are interpolated by
-  the local glass-to-plane distance. An AGSL shader projects the current content
-  through the tilted glass and applies the corresponding frost and darkening.
-- The hinge angle drives the optical model and handoff tuning. A short frame
-  follower bridges sensor updates. Resolved endpoints remove the effect, and
-  fold frame callbacks stop once the angle settles.
+- In 0.6.1, `DuoFoldModel` maps the physical hinge angle directly: the cover
+  bends by that angle, and the inner pane bends by 180 degrees minus that
+  angle. Display handoff estimates and opening/closing direction do not remap
+  the optical pose. Projection alone is capped at 87.3 degrees to avoid collapse
+  at the edge-on position; frost still reaches its full envelope at 90 degrees.
+- Four live levels—sharp plus three native Gaussian blurs—are interpolated from
+  the bend and position on the pane. Frost increases away from the hinge even
+  when projected image coordinates compress. Native Gaussian radii approximate
+  the reference binomial kernel's variance; the filters are not identical.
+- A short frame follower bridges sensor updates. Resolved endpoints remove the
+  effect, and fold frame callbacks stop once the angle settles. Configuration
+  changes resize the existing icons and widget hosts rather than reloading
+  them during the display handoff.
+- Sensor selection favors streams observed reporting intermediate angles.
+  Learned sensor quality survives the monitor's stop/start cycle; stop-only
+  jumps and source changes are eased from the previous filtered pose. Resuming
+  the home screen waits for a fresh sensor sample before showing the fold effect.
 - No accessibility service, screen-capture permission, or gesture injection is
   used.
 
@@ -84,10 +95,11 @@ The panels reuse the launcher's wallpaper source without capturing the screen.
 - Live rendering still needs GPU layers and blur passes. Real display handoff,
   widget updates during folding, and frame pacing need evaluation on a Fold
   device; removing bitmap capture does not establish a performance improvement.
-- The production fold shader compiled and passed 32 desktop Skia pixel states
-  across four rotations using `tools/check_live_shader.py`. Android GPU tests
-  remain unrun: no ADB device or emulator was available. See
-  [`docs/blur-validation.md`](docs/blur-validation.md) for the scope of this check.
+- Version 0.6.0 passed 56 JVM tests and 32 desktop shader pixel states. Those are
+  historical results for the previous model. Tests have not been run for the
+  0.6.1 angle, frost, and layout changes. Android GPU tests and physical-device
+  fidelity remain unverified; no ADB device or emulator was available in the
+  earlier checks. See [`docs/blur-validation.md`](docs/blur-validation.md).
 
 The transition work references [`Atomicx7/Duo-animation`](https://github.com/Atomicx7/Duo-animation),
 [`chuspeeism/iphone-duo`](https://github.com/chuspeeism/iphone-duo),
@@ -95,5 +107,8 @@ The transition work references [`Atomicx7/Duo-animation`](https://github.com/Ato
 the other repositories listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 The live view input follows Android's
 [AGSL RenderEffect API](https://developer.android.com/develop/ui/views/graphics/agsl/using-agsl).
+The current optical and frost model draws on
+[`iphone-duo/main.js`](https://github.com/chuspeeism/iphone-duo/blob/main/main.js)
+and [`ClassicGlassShader.kt`](https://github.com/joeconsorti/duo-fold-live/blob/main/app/src/main/java/org/duofold/live/ClassicGlassShader.kt).
 
 Architecture notes: [`docs/architecture.md`](docs/architecture.md).

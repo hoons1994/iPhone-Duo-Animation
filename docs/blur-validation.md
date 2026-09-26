@@ -1,15 +1,33 @@
 # Live blur architecture and historical regression evidence
 
-## Current launcher renderer
+## Current 0.6.1 launcher renderer
 
 `HomeActivity` now renders its current view tree through `LiveFoldLayout` and
 Android's `RenderEffect` input. `LiveFoldEffects` supplies four live levels:
-sharp, maximum blur divided by nine, maximum blur divided by three, and maximum
-blur. The blurred branches use Android's native Gaussian blur. `LiveFoldShader`
-projects each branch through the same glass geometry, assigns adjacent-level
-weights from the local glass-to-plane gap, and adds their weighted premultiplied
-colors. The fixed pane selects the sharp branch. Resolved endpoints remove the
-effect, and hinge frame callbacks stop when the angle follower settles.
+sharp, maximum source-space blur divided by nine, maximum divided by three, and
+maximum. `DuoFoldModel.nativeBlurRadius()` converts these targets to Android's
+native Gaussian radius with `(targetRadius - 0.5) / 0.57735`, clamped to 0.01.
+Matching the reference binomial kernel's variance is an approximation; its
+25-tap footprint, mip sampling, and our level interpolation are different filters.
+
+`DuoFoldModel` maps cover bend to the hinge angle and inner bend to 180 degrees
+minus that angle. Handoff calibration and direction do not alter the optical
+pose. The eye is hinge-aligned, including on the cover. Projection stops at
+87.3 degrees (`0.97 * 90` from the Android adaptation), while material motion
+uses the full 90-degree bend envelope. `LiveFoldShader` sets radius from
+`maxBlur * smoothstep(0, 1, bend / 90) * pow(edge, 1.35)`, with inputs clamped
+to their valid ranges and `edge` measured on the pane from hinge to outer edge.
+These material coordinates keep frost present when projected source coordinates
+compress. The geometry draws on
+[`iphone-duo/main.js`](https://github.com/chuspeeism/iphone-duo/blob/main/main.js);
+the projection cap and material-space envelope follow
+[`ClassicGlassShader.kt`](https://github.com/joeconsorti/duo-fold-live/blob/main/app/src/main/java/org/duofold/live/ClassicGlassShader.kt).
+
+The shader projects each level through the same glass geometry, interpolates
+adjacent levels, and adds weighted premultiplied colors. The fixed pane selects
+the sharp branch. Resolved endpoints remove the effect, and hinge frame
+callbacks stop when the angle follower settles. Configuration changes reuse
+attached home icons and widget hosts and reflow them for the new viewport.
 
 This path has no app bitmap capture, readback, cached mip generation, or idle
 capture worker. Android still renders effect inputs and blur passes on the GPU.
@@ -22,16 +40,30 @@ motion, interpolation between blur levels, premultiplied composition, clear
 endpoints, rotations, and both physical display handoffs. Device measurements
 are also needed for frame pacing and GPU cost. The historical numbers below do
 not validate this graph or establish that it runs faster than the snapshot path.
+The 0.6.1 sensor path retains quality observations across monitor stop/start,
+prioritizes observed intermediate-angle streams, guards stop-only jumps, and
+bridges source or mode changes from the prior filtered pose. Home resume gates
+the effect on a fresh real sample. These lifecycle and sensor behaviors require
+their own checks in addition to shader pixels.
 
-## Current production shader check
+Tests have not been run for the 0.6.1 model, sensor, and reflow changes. Neither reference
+fidelity nor Android GPU performance is verified for this revision.
+`:app:assembleDebug` completed successfully for version 0.6.1 (version code 8)
+on 2026-09-26. This compiles and packages the APK; AGSL compiles on the device at
+runtime, so an APK build does not validate shader execution or animation quality.
 
-`tools/check_live_shader.py` compiled the actual `LiveFoldShader.SOURCE` with
+## Historical 0.6.0 production shader check
+
+For version 0.6.0, `tools/check_live_shader.py` compiled its `LiveFoldShader.SOURCE` with
 desktop Skia and passed all 32 pixel states: four cover angles and four inner
 angles across four rotations. The generated stripe input is processed into four
 native Gaussian levels, and the production shader projects and weights each
 level. The checks cover opacity preservation, fixed-pane sharpness, moving-pane
 frost without mistaking black output for blur, and unchanged endpoint pixels.
-Diagnostics are written under `build/live-shader-report/`.
+That run's diagnostics were written under `build/live-shader-report/`. Those
+32 passing states describe the earlier model and do not validate 0.6.1. The
+fixture has been updated for the new angle mapping, eye ratios, material motion,
+and native blur conversion, but it has not been run for this revision.
 
 ```powershell
 python tools/check_live_shader.py build/live-shader-report
@@ -42,7 +74,7 @@ input levels; it does not execute Android's `RenderEffect` graph, view
 invalidation, touch dispatch, or GPU frame timing. It also does not validate the
 separate `LiquidGlassPanel` backdrop and control appearance.
 
-## Current Android and geometry coverage
+## Android and geometry test scope
 
 `LiveFoldRenderTest` exercises the actual live `RenderEffect` graph through
 `HardwareRenderer`. Its cases cover moving-pane frost and fixed-pane sharpness
@@ -52,14 +84,16 @@ at clear endpoints. These GPU tests remain unrun because no ADB device or
 emulator was available.
 
 `LiveFoldGeometryTest` covers the source coordinates used for touch mapping:
-identity at clear endpoints, the fixed inner pane, continuity at the hinge, and
-rejection of rays that miss content or pass behind the viewer. Those checks
+identity at clear endpoints, the fixed inner pane, continuity at the hinge,
+rejection of rays that miss content, and rejection of touches on fully darkened
+glass (`fullyDarkGlass_doesNotActivateHiddenContent`). Those checks
 target pure geometry and cannot establish Android touch dispatch or fold
-performance. On 2026-09-26, `:app:testDebugUnitTest` passed all 56 JVM tests,
-including the five live geometry cases and the hinge filter settling regressions.
+performance. The following build and test results belong to 0.6.0, before the
+current changes: on 2026-09-26, `:app:testDebugUnitTest` passed all 56 JVM tests,
+including the then-current five live geometry cases and hinge filter settling regressions.
 `:app:assembleDebug` and `:app:assembleDebugAndroidTest` also completed. The latter
 compiles the GPU tests; it does not execute them on a device.
-The final clean build also passed `:app:lintDebug` with no errors. Three
+That 0.6.0 clean build also passed `:app:lintDebug` with no errors. Three
 non-blocking warnings remain: two Android test dependency update notices and
 the existing backup configuration notice.
 
@@ -69,11 +103,13 @@ The old shader based blur and darkening on the projected screenshot coordinate.
 Near 90 degrees, that coordinate collapses to the hinge. Increasing mip levels
 could not fix this because the computed blur radius was almost zero.
 
-The corrected optical model uses the pixel-space ray-plane geometry from `duo-open`,
+The historical snapshot correction uses the pixel-space ray-plane geometry from `duo-open`,
 with a 45-degree virtual tilt cap and a density-aware 320 mm eye distance. Blur
 and attenuation follow the glass-to-plane gap while perspective lookup follows
 the ray intersection. This replaces the fixed model dimensions and 90-degree
-collapse that stretched launcher widgets. It follows the physical model in
+collapse that stretched launcher widgets. This remains in the legacy
+`TransitionTuning`/snapshot path and does not describe the 0.6.1 live model.
+It follows the physical model in
 [Atomicx7's shader](https://github.com/Atomicx7/Duo-animation/blob/master/app/src/main/res/raw/duo_fold.agsl)
 and its two-pane Android adaptation in
 [`duo-open`](https://github.com/marcoazeem/duo-open).

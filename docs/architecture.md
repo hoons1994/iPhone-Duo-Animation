@@ -66,14 +66,34 @@ current `RenderNode` contents, including ordinary child views, as the shader
 input. Launcher redraws and widget updates can therefore reach the folded pane
 without waiting for an app-managed snapshot refresh.
 
-`LiveFoldEffects` builds four input branches: sharp content and native Gaussian
-blurs at one ninth, one third, and the full maximum blur radius. `LiveFoldShader`
-uses the local glass-to-plane gap to weight adjacent levels. The branches are
-combined by adding their weighted premultiplied colors. The fixed inner pane
-uses the sharp branch; the moving pane uses ray-plane projection, interpolated
-frost, and distance-based darkening. The optical model follows the stationary
-interface plane and moving glass described by
-[`Atomicx7/Duo-animation`](https://github.com/Atomicx7/Duo-animation).
+The 0.6.1 live renderer uses `DuoFoldModel`, independently of the legacy
+`TransitionTuning` snapshot model. Given hinge angle `h`, cover bend is `h` and
+inner bend is `180 - h`. Neither a learned display-switch angle nor a change of
+opening/closing direction changes this mapping. `LiveFoldGeometry` shares the
+resulting projection with touch hit testing. The eye is aligned with the hinge
+on both surfaces, including the cover's hinge-side edge. Eye distance scales
+with the active axis extent using ratios derived from the scene dimensions in
+[`iphone-duo/main.js`](https://github.com/chuspeeism/iphone-duo/blob/main/main.js),
+replacing the live renderer's earlier fixed millimeter calibration.
+
+Only the projection angle is capped at 87.3 degrees, corresponding to the
+`0.97 * 90` limit in
+[`ClassicGlassShader.kt`](https://github.com/joeconsorti/duo-fold-live/blob/main/app/src/main/java/org/duofold/live/ClassicGlassShader.kt).
+The material envelope still reaches one at a 90-degree bend. The shader
+computes `motion = smoothstep(0, 1, clamp(bend / 90, 0, 1))` and scales frost
+by `motion * pow(edge, 1.35)`, where `edge` is distance from the hinge normalized
+by moving-pane width. Darkening uses a similar outward envelope. Keeping these
+values in pane coordinates prevents the historical loss of frost when texture
+coordinates compress near edge-on projection.
+
+`LiveFoldEffects` supplies sharp content and three native Gaussian levels whose
+target source-space blur radii are one ninth, one third, and the full maximum.
+It converts each target to Android's native radius using
+`max(0.01, (targetRadius - 0.5) / 0.57735)`. This approximates the variance of the
+reference 5x5 binomial footprint; native filtering and interpolation do not
+reproduce that kernel exactly. `LiveFoldShader` interpolates adjacent levels
+and adds weighted premultiplied colors. The fixed inner pane stays on the sharp
+branch. Branches that cannot contribute at the current bend are omitted.
 
 The launcher path does not call `View.draw()` into a bitmap, read pixels back
 to the CPU, generate cached mipmaps, or schedule idle captures. Android still
@@ -81,14 +101,32 @@ uses GPU render targets for the effect and its blur passes. This change removes
 the app's frozen-frame lifecycle; it does not remove the cost of rendering and
 filtering the launcher.
 
-`HingeAngleMonitor` selects the finest usable public or vendor hinge sensor. The
-filtered angle advances the glass model through `Choreographer`; stepped sensors
-are eased between their reported stops. `HandoffCalibrator` keeps separate
-opening and closing estimates when the activity observes a recent physical
-display geometry change. `LiveFoldLayout` updates shader uniforms on display
+`HingeAngleMonitor` ranks observed sensor streams before advertised resolution:
+a stream with intermediate readings outranks an unknown or stop-only stream.
+Quality observations survive stop/start on the same monitor, while registration,
+sample freshness, and filter state reset. Repeated stationary endpoint readings
+alone do not mark a sensor as stepped. A first observed jump between distinct
+0/90/180-degree stops enables the coarse follower immediately. Source or
+fine/coarse-mode changes bridge from the previous filtered pose; ordinary fine
+sensor samples continue through the existing fine filter.
+
+The filtered angle advances the glass model through `Choreographer`. On resume,
+`HomeActivity` keeps fold rendering inactive until the first real sensor sample
+installs a fresh pose, avoiding reuse of the angle from before stop. Synthetic
+settling frames cannot open this gate. `HandoffCalibrator` still records
+opening and closing display-switch observations, but the current optical model
+does not use those estimates to stretch or shorten its angle range.
+`LiveFoldLayout` updates shader uniforms on display
 frames while its short angle follower is moving. Once it settles, the fold frame
 loop stops; normal view invalidation still updates live content. At the clear
 endpoints, the layout removes its `RenderEffect` entirely.
+
+When the viewport changes, `HomeActivity` reflows the attached icon views and
+widget hosts. A pre-draw pass updates page and grid widths, restores the selected
+page after layout settles, and then updates hosted widget size options. It does
+not reload icons or reinflate widget hosts in `onConfigurationChanged`. Wallpaper
+decode and geometry refresh remain responsive to the new viewport. This reduces
+avoidable work at handoff; device frame pacing has not been measured.
 
 Touch coordinates follow the displayed glass projection. During Android's
 system drag-and-drop, the fold effect temporarily clears so its drag shadow and
@@ -105,7 +143,8 @@ effect.
 
 ```text
 wallpaper + launcher views → live RenderNode input → blur branches → AGSL projection
-hinge events → filtered angle → frame follower → glass, blur, and handoff
+hinge events → filtered angle → frame follower → physical bend, frost, and projection
+display geometry → view reflow + display classification (independent of optical angle)
 ```
 
 ## Runtime boundaries
@@ -127,12 +166,12 @@ hinge events → filtered angle → frame follower → glass, blur, and handoff
 
 ## Device validation still required
 
-The production fold shader compiled and passed 32 desktop Skia pixel states
-across four rotations. That check covers projection, blur weights, opacity,
-fixed-pane sharpness, and clear endpoints with generated inputs. It does not
+The previous 0.6.0 implementation passed 56 JVM tests and 32 desktop Skia pixel
+states across four rotations. Those results predate the 0.6.1 model and layout
+changes. Tests have not been run for this revision. Desktop checks cannot
 execute Android's `RenderEffect` graph, validate glass-panel appearance, or
-measure performance. Android GPU instrumentation remains unrun because no ADB
-device or emulator was available.
+measure device performance. Android GPU instrumentation remains unrun; no ADB
+device or emulator was available during the earlier checks.
 
 APK compilation does not establish widget-provider compatibility, physical
 display handoff timing, blur composition, or GPU frame pacing. Native live blur

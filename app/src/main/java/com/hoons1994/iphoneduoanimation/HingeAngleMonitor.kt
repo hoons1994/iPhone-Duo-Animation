@@ -8,10 +8,11 @@ import android.hardware.SensorManager
 import android.os.SystemClock
 import android.view.Choreographer
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
- * Selects the finest reporting hinge-angle sensor and converts it to display frames.
+ * Selects the best observed hinge-angle stream and converts it to display frames.
  *
  * Samsung devices can expose permission-gated vendor sensors and a public sensor
  * that reports only 0/90/180. Permission failures are ignored. A proven coarse
@@ -24,25 +25,44 @@ class HingeAngleMonitor(
 
     private class Candidate(val sensor: Sensor) {
         var registered = false
-        var events = 0
-        val distinct = LinkedHashSet<Int>()
+        var sessionEvents = 0
+        private var previousSessionAngle = Float.NaN
+        var hasIntermediateAngles = false
+            private set
+        private var hasStopTransition = false
         val resolution: Float
             get() = sensor.resolution.takeIf { it.isFinite() && it > 0f } ?: 1f
         val standard: Boolean
             get() = sensor.type == Sensor.TYPE_HINGE_ANGLE
         val coarse: Boolean
-            get() = HingeSensorQuality.isCoarse(resolution, events, distinct)
+            get() = !hasIntermediateAngles &&
+                (resolution >= HingeSensorQuality.COARSE_RESOLUTION_DEGREES || hasStopTransition)
+        val qualityRank: Int
+            get() = when {
+                hasIntermediateAngles -> 0
+                coarse -> 2
+                else -> 1
+            }
 
         fun observe(value: Float) {
-            events++
-            if (distinct.size < MAX_DISTINCT_ANGLES) distinct += value.roundToInt()
+            if (sessionEvents < Int.MAX_VALUE) sessionEvents++
+            if (!isStop(value)) hasIntermediateAngles = true
+            if (previousSessionAngle.isFinite() && isStop(previousSessionAngle) && isStop(value) &&
+                abs(value - previousSessionAngle) >= MIN_STOP_JUMP_DEGREES) {
+                hasStopTransition = true
+            }
+            previousSessionAngle = value
         }
 
         fun resetSession() {
             registered = false
-            events = 0
-            distinct.clear()
+            sessionEvents = 0
+            previousSessionAngle = Float.NaN
+            // Stream quality survives a launcher stop/start. Repeated samples
+            // at a stationary endpoint alone are not evidence of quantization.
         }
+
+        private fun isStop(value: Float) = STOPS.any { abs(value - it) <= STOP_SLOP_DEGREES }
     }
 
     private val sensorManager = context.getSystemService(SensorManager::class.java)
@@ -54,8 +74,15 @@ class HingeAngleMonitor(
     private var framePending = false
     private var coarseCurrent = Float.NaN
     private var coarseTarget = Float.NaN
-    private var coarseOpening = true
+    private var usingCoarseFollower = false
+    private var fineBridgeCurrent = Float.NaN
+    private var latestFineOutput: HingeSignalFilter.Output? = null
+    private var lastOutput: HingeSignalFilter.Output? = null
+    private var directionAnchorAngle = Float.NaN
+    private var opening = true
     private var lastFrameNanos = 0L
+    private val candidateOrder = compareBy<Candidate> { it.qualityRank }
+        .thenBy { it.resolution }.thenBy { !it.standard }
 
     val isAvailable: Boolean
         get() = registrationSucceeded ?: candidates.isNotEmpty()
@@ -78,6 +105,12 @@ class HingeAngleMonitor(
         candidates.forEach(Candidate::resetSession)
         signalFilter.reset()
         resetCoarseFollower()
+        usingCoarseFollower = false
+        fineBridgeCurrent = Float.NaN
+        latestFineOutput = null
+        lastOutput = null
+        directionAnchorAngle = Float.NaN
+        opening = true
         for (candidate in candidates) {
             candidate.registered = try {
                 sensorManager.registerListener(
@@ -109,25 +142,45 @@ class HingeAngleMonitor(
         }
         val candidate = candidates.firstOrNull { it.sensor == event.sensor } ?: return
         if (!candidate.registered) return
-        candidate.observe(value)
+        val angle = value.coerceIn(0f, 180f)
+        candidate.observe(angle)
 
         val previousActive = active
-        val best = candidates.asSequence()
-            .filter { it.registered && it.events > 0 }
-            .minWithOrNull(compareBy<Candidate> { it.resolution }.thenBy { !it.standard })
-            ?: return
-        active = best
-        if (active !== candidate) return
-        if (previousActive !== active) {
+        if (previousActive != null && previousActive !== candidate &&
+            candidateOrder.compare(candidate, previousActive) >= 0) return
+        // A source may take over only when it supplies a sample this session.
+        // Equal ranks retain the active source instead of alternating events.
+        active = candidate
+        updateDirection(angle)
+        if (previousActive !== candidate || usingCoarseFollower != candidate.coarse) {
+            val previousPose = lastOutput
             signalFilter.reset()
             resetCoarseFollower()
+            fineBridgeCurrent = Float.NaN
+            latestFineOutput = null
+            usingCoarseFollower = candidate.coarse
+            if (usingCoarseFollower) {
+                coarseCurrent = previousPose?.filteredAngleDegrees ?: angle
+                coarseTarget = previousPose?.rawAngleDegrees ?: angle
+            } else {
+                val output = signalFilter.update(angle, event.timestamp).copy(opening = opening)
+                latestFineOutput = output
+                if (previousPose != null && abs(previousPose.filteredAngleDegrees - angle) > COARSE_SETTLE_DEGREES) {
+                    // Keep this exact displayed pose when a stepped stream
+                    // reveals continuous data or a better sensor takes over.
+                    // The short bridge exists only for this source/mode switch.
+                    fineBridgeCurrent = previousPose.filteredAngleDegrees
+                }
+                emitFine(output)
+                scheduleFollowFrame()
+                return
+            }
         }
 
-        val angle = value.coerceIn(0f, 180f)
-        if (candidate.coarse) {
+        if (usingCoarseFollower) {
             followCoarseAngle(angle)
         } else {
-            onAngleChanged(signalFilter.update(angle, event.timestamp))
+            emitFine(signalFilter.update(angle, event.timestamp).copy(opening = opening))
             scheduleFollowFrame()
         }
     }
@@ -140,7 +193,6 @@ class HingeAngleMonitor(
             return
         }
         if (angle != coarseTarget) {
-            coarseOpening = angle > coarseTarget
             coarseTarget = angle
         }
         // Deliver the real raw angle immediately, even while the visual follower
@@ -152,17 +204,26 @@ class HingeAngleMonitor(
     override fun doFrame(frameTimeNanos: Long) {
         framePending = false
         if (!started) return
-        if (active?.coarse != true) {
+        if (!usingCoarseFollower) {
             // SensorEvent.timestamp uses elapsedRealtimeNanos. Choreographer's
             // frame clock has a different sleep basis, so do not mix the two.
-            signalFilter.settle(SystemClock.elapsedRealtimeNanos())?.let(onAngleChanged)
+            val settled = signalFilter.settle(SystemClock.elapsedRealtimeNanos())?.copy(opening = opening)
+            if (settled != null) latestFineOutput = settled
+            if (fineBridgeCurrent.isFinite()) {
+                val output = latestFineOutput ?: return
+                fineBridgeCurrent = FrameSmoothing.step(fineBridgeCurrent, output.filteredAngleDegrees,
+                    frameDeltaSeconds(frameTimeNanos), FINE_BRIDGE_TIME_CONSTANT_SECONDS, COARSE_SETTLE_DEGREES)
+                emitFine(output.copy(isSensorSample = false))
+                if (fineBridgeCurrent == output.filteredAngleDegrees) {
+                    fineBridgeCurrent = Float.NaN
+                    lastFrameNanos = 0L
+                }
+            } else if (settled != null) emitOutput(settled)
             scheduleFollowFrame()
             return
         }
         if (!coarseCurrent.isFinite() || !coarseTarget.isFinite()) return
-        val dt = if (lastFrameNanos == 0L) 1f / 60f else
-            (frameTimeNanos - lastFrameNanos) / 1_000_000_000f
-        lastFrameNanos = frameTimeNanos
+        val dt = frameDeltaSeconds(frameTimeNanos)
         coarseCurrent = FrameSmoothing.step(
             coarseCurrent,
             coarseTarget,
@@ -175,22 +236,49 @@ class HingeAngleMonitor(
     }
 
     private fun emitCoarse(isSensorSample: Boolean) {
-        onAngleChanged(
+        emitOutput(
             HingeSignalFilter.Output(
                 rawAngleDegrees = coarseTarget,
                 filteredAngleDegrees = coarseCurrent,
                 filteredProgress = (coarseCurrent / 180f).coerceIn(0f, 1f),
-                opening = coarseOpening,
+                opening = opening,
                 isSensorSample = isSensorSample,
             ),
         )
     }
 
+    private fun emitFine(output: HingeSignalFilter.Output) {
+        latestFineOutput = output
+        val visual = fineBridgeCurrent.takeIf { it.isFinite() } ?: output.filteredAngleDegrees
+        emitOutput(output.copy(filteredAngleDegrees = visual, filteredProgress = visual / 180f))
+    }
+
+    private fun emitOutput(output: HingeSignalFilter.Output) {
+        lastOutput = output
+        onAngleChanged(output)
+    }
+
+    private fun updateDirection(angle: Float) {
+        if (!directionAnchorAngle.isFinite()) directionAnchorAngle = angle
+        val displacement = angle - directionAnchorAngle
+        if (abs(displacement) >= DIRECTION_DEADBAND_DEGREES) {
+            opening = displacement > 0f
+            directionAnchorAngle = angle
+        }
+    }
+
+    private fun frameDeltaSeconds(frameTimeNanos: Long): Float {
+        val dt = if (lastFrameNanos == 0L) 1f / 60f else
+            (frameTimeNanos - lastFrameNanos) / 1_000_000_000f
+        lastFrameNanos = frameTimeNanos
+        return dt
+    }
+
     private fun scheduleFollowFrame() {
         if (framePending || !started) return
-        val needsFrame = if (active?.coarse == true) {
+        val needsFrame = if (usingCoarseFollower) {
             coarseCurrent.isFinite() && coarseTarget.isFinite() && coarseCurrent != coarseTarget
-        } else signalFilter.hasPendingSettle
+        } else signalFilter.hasPendingSettle || fineBridgeCurrent.isFinite()
         if (!needsFrame) return
         framePending = true
         Choreographer.getInstance().postFrameCallback(this)
@@ -206,7 +294,6 @@ class HingeAngleMonitor(
         cancelFollowFrame()
         coarseCurrent = Float.NaN
         coarseTarget = Float.NaN
-        coarseOpening = true
     }
 
     private fun discover(): List<Sensor> {
@@ -231,8 +318,12 @@ class HingeAngleMonitor(
         const val SAMPLING_PERIOD_US = 8_000
         const val MAX_REPORT_LATENCY_US = 0
         const val PLAUSIBLE_SLACK_DEGREES = 5f
-        const val MAX_DISTINCT_ANGLES = 8
+        const val MIN_STOP_JUMP_DEGREES = 45f
+        const val STOP_SLOP_DEGREES = 2f
+        val STOPS = floatArrayOf(0f, 90f, 180f)
+        const val DIRECTION_DEADBAND_DEGREES = 0.25f
         const val COARSE_TIME_CONSTANT_SECONDS = 0.12f
         const val COARSE_SETTLE_DEGREES = 0.02f
+        const val FINE_BRIDGE_TIME_CONSTANT_SECONDS = 0.024f
     }
 }

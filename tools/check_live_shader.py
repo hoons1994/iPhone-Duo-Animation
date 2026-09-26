@@ -33,7 +33,8 @@ def blur_image(source, radius):
     if radius == 0:
         return source
     # Android libs/hwui/utils/Blur.h convertRadiusToSigma (RenderEffect JNI).
-    sigma = radius * 0.57735 + 0.5
+    native_radius = max(0.01, (radius - 0.5) / 0.57735)
+    sigma = native_radius * 0.57735 + 0.5
     effect = skia.ImageFilters.Blur(sigma, sigma, skia.TileMode.kClamp)
     surface = skia.Surface(SIZE, SIZE)
     surface.getCanvas().drawImage(source, 0, 0, SAMPLING, skia.Paint(ImageFilter=effect))
@@ -42,11 +43,12 @@ def blur_image(source, radius):
 
 def render(effect, angle, cover, rotation):
     source = source_image(rotation in (1, 3))
-    phase = ((angle - 6) / (98 - 6) if cover else (172 - angle) / (172 - 98))
-    phase = max(0, min(1, phase))
-    if phase == 0:
+    bend = angle if cover else 180 - angle
+    phase = max(0, min(1, bend / 90))
+    motion = phase * phase * (3 - 2 * phase)
+    if motion < 0.0001:
         return source
-    radians = phase * math.pi / 4
+    radians = min(87.3, max(0, bend)) * math.pi / 180
     radius = 72 * SIZE / (774 if cover else 1600)
     surface = skia.Surface(SIZE, SIZE)
     surface.getCanvas().clear(skia.ColorTRANSPARENT)
@@ -57,8 +59,10 @@ def render(effect, angle, cover, rotation):
                          skia.TileMode.kClamp, SAMPLING))
         builder.setUniform("resolution", skia.V2(SIZE, SIZE))
         uniforms = dict(coverSurface=float(cover), foldCos=math.cos(radians),
-                        foldSin=math.sin(radians), eyeDistancePx=320 * 2,
-                        maxBlurPx=radius, blurSpread=0.12, darkening=0.015 * 6 / 2,
+                        foldSin=math.sin(radians),
+                        eyeDistancePx=SIZE * ((40 - .825538) / 7.73936 if cover
+                                              else (40 - .24948) / 15.7987),
+                        maxBlurPx=radius, motionAmount=motion,
                         hingeAxisY=float(rotation in (1, 3)),
                         hingeFromEnd=float(rotation in (1, 2)), level=level)
         for key, value in uniforms.items():
