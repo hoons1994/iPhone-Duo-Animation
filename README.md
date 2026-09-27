@@ -52,6 +52,12 @@ physical hinge → filtered angle → eased optical pose → pre-draw commit
   supplies the current view and child contents, so clock and widget updates can
   remain visible while folding. There is no app-managed bitmap capture, readback,
   idle capture timer, or mipmap worker in the home rendering path.
+- Version 0.6.7 keeps the hinge mapping and smooth optical pose from 0.6.6, then
+  replaces its blur renderer with one live 32-tap Vogel disk pass. The disk
+  radius is now used as a disk radius; the previous Gaussian renderer treated
+  it as sigma and spread the blur about twice as far. Its fixed tap pattern
+  avoids relocating the sample set as the hinge moves. On-screen grain and GPU
+  frame cost still need a Fold-device check.
 - Version 0.6.6 maps each display's visible hinge range to an optical tilt of
   0–45 degrees, with cubic smoothstep easing. The cover rises from clear at
   6 degrees to maximum tilt at the learned handoff; the inner pane resolves
@@ -63,11 +69,9 @@ physical hinge → filtered angle → eased optical pose → pre-draw commit
   `min(maxBlur, 0.12 * gap)`. Perspective uses an eye at the display center,
   320 mm away, with a minimum distance of twice the pane width. This replaces
   the earlier rigid 87.3-degree projection and material-edge frost envelope.
-- The up-to-six Gaussian levels from 0.6.5 remain. On normal Fold dimensions,
-  blur requests of at least one source pixel have no unblurred contribution;
-  neighboring levels blend by variance. Tiny viewports merge equivalent native
-  radii. This is an approximation, not the references' Vogel-disk/Metal filter
-  or their 25-tap-and-mip alternative. GPU cost still needs device measurement.
+- The first visible draw waits for a current-session hinge sample, with a 120 ms
+  endpoint fallback if no fresh reading arrives. Handoff calibration uses the
+  sensor event's measurement time instead of its delivery time.
 - `HingeAngleMonitor` owns angle filtering and settling. `LiveFoldLayout`
   commits the latest result once before drawing, without a second 16 ms follower.
   Resolved endpoints remove the effect. Normal activity resumes and display
@@ -123,12 +127,11 @@ The panels reuse the launcher's wallpaper source without capturing the screen.
 - Live rendering still needs GPU layers and blur passes. Real display handoff,
   widget updates during folding, and frame pacing need evaluation on a Fold
   device; removing bitmap capture does not establish a performance improvement.
-- Version 0.6.0 passed 56 JVM tests and 32 desktop shader pixel states, and
-  versions 0.6.1–0.6.5 subsequently built APKs. Those are historical results.
-  The final 0.6.6 APK compiled and packaged successfully on 2026-09-26. No tests,
-  runtime AGSL checks, or device interaction checks have been run for its geometry
-  and lifecycle changes. Android GPU
-  performance and physical-device fidelity remain unverified. See
+- Version 0.6.0 passed 56 JVM tests and 32 desktop shader pixel states. Those are
+  historical results. Version 0.6.7's debug APK build completed successfully;
+  no tests, runtime AGSL checks, or device interaction checks have been run for
+  its shader and lifecycle changes. Android GPU performance and physical-device
+  fidelity remain unverified. See
   [`docs/blur-validation.md`](docs/blur-validation.md).
 
 The transition work references [`Atomicx7/Duo-animation`](https://github.com/Atomicx7/Duo-animation),

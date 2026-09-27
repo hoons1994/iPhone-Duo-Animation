@@ -10,8 +10,8 @@ android {
         applicationId = "com.hoons1994.iphoneduoanimation"
         minSdk = 33
         targetSdk = 37
-        versionCode = 13
-        versionName = "0.6.6"
+        versionCode = 14
+        versionName = "0.6.7"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

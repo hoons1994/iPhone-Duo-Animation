@@ -107,7 +107,9 @@ class HomeActivity : Activity() {
     private var latestOpening = true
     private var awaitingHingeSample = true
     private var homeStarted = false
-    private var lastSignalAtMs = 0L
+    private var hingeSessionStartedAtNanos = Long.MIN_VALUE
+    private var lastSignalAtNanos = Long.MIN_VALUE
+    private val firstPoseTimeout = Runnable { releaseFirstPoseAtSurfaceEndpoint() }
     private var previousCoverSurface: Boolean? = null
     private var widgetListening = false
     private var pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
@@ -172,11 +174,23 @@ class HomeActivity : Activity() {
         HingeAngleMonitor(this) { signal ->
             runOnUiThread {
                 if (!homeStarted || awaitingHingeSample && !signal.isSensorSample) return@runOnUiThread
+                if (signal.isSensorSample) {
+                    val sampleAt = signal.sampleTimestampNanos
+                    val now = android.os.SystemClock.elapsedRealtimeNanos()
+                    val age = now - sampleAt
+                    if (sampleAt == Long.MIN_VALUE || sampleAt < hingeSessionStartedAtNanos ||
+                        sampleAt < lastSignalAtNanos || age < 0L ||
+                        age > TransitionTuning.MAX_SURFACE_EVENT_AGE_MS * NANOS_PER_MILLISECOND) {
+                        // Do not open the first-draw gate or recalibrate from a
+                        // queued event that predates this visible sensor session.
+                        return@runOnUiThread
+                    }
+                }
                 latestProgress = signal.filteredProgress
                 latestOpening = signal.opening
                 if (signal.isSensorSample) {
                     latestRawProgress = (signal.rawAngleDegrees / 180f).coerceIn(0f, 1f)
-                    lastSignalAtMs = android.os.SystemClock.elapsedRealtime()
+                    lastSignalAtNanos = signal.sampleTimestampNanos
                 }
                 homeContent.setHandoffProgress(handoffCalibrator.estimate(signal.opening))
                 homeContent.updateProgress(signal.filteredProgress, signal.opening)
@@ -184,6 +198,8 @@ class HomeActivity : Activity() {
                     // Install the first fresh pose before allowing a frame.
                     // Resuming must never render the angle from before stop().
                     awaitingHingeSample = false
+                    mainHandler.removeCallbacks(firstPoseTimeout)
+                    homeContent.setFirstPoseReady(true)
                     homeContent.setRenderingActive(true)
                 }
             }
@@ -226,10 +242,17 @@ class HomeActivity : Activity() {
         super.onStart()
         homeStarted = true
         awaitingHingeSample = true
-        lastSignalAtMs = 0L
+        hingeSessionStartedAtNanos = android.os.SystemClock.elapsedRealtimeNanos()
+        lastSignalAtNanos = Long.MIN_VALUE
         latestRawProgress = Float.NaN
         homeContent.setRenderingActive(false)
+        homeContent.setFirstPoseReady(false)
         hingeMonitor.start()
+        if (hingeMonitor.isAvailable) {
+            mainHandler.postDelayed(firstPoseTimeout, TransitionTuning.MAX_SURFACE_EVENT_AGE_MS)
+        } else {
+            releaseFirstPoseAtSurfaceEndpoint()
+        }
         startClock()
         if (!widgetListening) {
             // startListening delivers pending RemoteViews/provider/removal
@@ -274,6 +297,8 @@ class HomeActivity : Activity() {
 
     override fun onStop() {
         homeStarted = false
+        awaitingHingeSample = true
+        mainHandler.removeCallbacks(firstPoseTimeout)
         mainHandler.removeCallbacks(homeRefreshRunnable)
         dismissAllGlassMenus()
         stopClock()
@@ -288,6 +313,7 @@ class HomeActivity : Activity() {
 
     override fun onDestroy() {
         mainHandler.removeCallbacks(homeRefreshRunnable)
+        mainHandler.removeCallbacks(firstPoseTimeout)
         if (packageReceiverRegistered) {
             unregisterReceiver(packageReceiver)
             packageReceiverRegistered = false
@@ -302,6 +328,19 @@ class HomeActivity : Activity() {
         wallpaperExecutor.shutdownNow()
         onBackInvokedDispatcher.unregisterOnBackInvokedCallback(homeBackCallback)
         super.onDestroy()
+    }
+
+    private fun releaseFirstPoseAtSurfaceEndpoint() {
+        if (!homeStarted || !awaitingHingeSample) return
+        awaitingHingeSample = false
+        mainHandler.removeCallbacks(firstPoseTimeout)
+        val progress = if (homeContent.isCoverSurface()) 0f else 1f
+        latestProgress = progress
+        latestRawProgress = Float.NaN
+        latestOpening = true
+        homeContent.updateProgress(progress, isOpening = true)
+        homeContent.setFirstPoseReady(true)
+        homeContent.setRenderingActive(true)
     }
 
     private fun scheduleHomeRefresh() {
@@ -610,8 +649,9 @@ class HomeActivity : Activity() {
         previousCoverSurface = homeContent.isCoverSurface()
         homeContent.onSurfaceChanged = { isCover ->
             val previous = previousCoverSurface
-            if (previous != null && previous != isCover && lastSignalAtMs > 0L &&
-                android.os.SystemClock.elapsedRealtime() - lastSignalAtMs <= TransitionTuning.MAX_SURFACE_EVENT_AGE_MS) {
+            val signalAge = android.os.SystemClock.elapsedRealtimeNanos() - lastSignalAtNanos
+            if (previous != null && previous != isCover && lastSignalAtNanos != Long.MIN_VALUE &&
+                signalAge in 0L..(TransitionTuning.MAX_SURFACE_EVENT_AGE_MS * NANOS_PER_MILLISECOND)) {
                 handoffCalibrator.observe(latestOpening, previous, isCover,
                     if (latestRawProgress.isFinite()) latestRawProgress else latestProgress)
                 handoffPreferences.save(handoffCalibrator)
@@ -2344,6 +2384,7 @@ class HomeActivity : Activity() {
     private fun dp(value: Int) = (value * resources.displayMetrics.density).roundToInt()
 
     private companion object {
+        const val NANOS_PER_MILLISECOND = 1_000_000L
         const val HOME_PREFERENCES = "duo_home_layout"
         const val KEY_SHORTCUTS = "shortcuts"
         const val KEY_WIDGETS = "widgets"

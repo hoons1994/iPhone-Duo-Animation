@@ -9,8 +9,8 @@ attribution, not verified visual equivalence.
   The 0.6.1 live `DuoFoldModel` and `LiveFoldGeometry` use scene-scale eye
   ratios and hinge-anchored projection informed by
   [`main.js`](https://github.com/chuspeeism/iphone-duo/blob/main/main.js).
-  The source-space blur scale and binomial kernel inform the native Gaussian
-  approximation. Apple model and UI assets from the reference are not bundled.
+  The source-space blur scale and binomial kernel informed earlier Gaussian
+  approximations. Apple model and UI assets from the reference are not bundled.
   In 0.6.6 the scene eye ratios are replaced by density-based optics. The relative
   width of its flexible hinge informs Duo Home's smooth one-sided hinge strip;
   this strip uses a smoothstep integral, not the original Hermite mesh.
@@ -22,8 +22,8 @@ attribution, not verified visual equivalence.
   The live path uses native Gaussian levels rather than the reference's exact
   5x5 binomial and mip filter. Its radius conversion approximates that kernel's
   variance; it does not claim identical filtering.
-  Version 0.6.6 replaces this near-edge-on projection and edge-power frost model
-  while retaining the Gaussian level infrastructure and source-space blur limit.
+  Version 0.6.6 replaced this near-edge-on projection and edge-power frost model.
+  Its six-level Gaussian blur was removed in 0.6.7.
   The legacy half-resolution SurfaceView hardware-buffer and frame scheduling approach
   was adapted from `app/src/main/java/org/duofold/live/DuoGlass.kt` at commit
   `d10c7ef550424eb2182f3592ef580264f6d63e4f`.
@@ -43,11 +43,12 @@ attribution, not verified visual equivalence.
   uses its learned handoff, adds smoothstep endpoints, and uses a 320 mm eye distance.
 - `elijah-semyonov/DuoLikeAnimation` — https://github.com/elijah-semyonov/DuoLikeAnimation
   Copyright (c) 2026 Elijah Semyonov
-  Version 0.6.6 draws its fixed UI plane, glass-to-plane gap frost, density-normalized
-  darkening, and 320 mm eye distance from
+  Versions 0.6.6–0.6.7 draw their fixed UI plane, glass-to-plane gap frost,
+  density-normalized darkening, and 320 mm eye distance from
   [`DuoFold.metal`](https://github.com/elijah-semyonov/DuoLikeAnimation/blob/main/DuoLikeAnimation/Shaders/DuoFold.metal)
-  and `FoldEffect.swift`. The Gaussian-level filter differs from its Vogel disk
-  sampling. The Swift implementation uses device attitude; Duo Home's 45-degree
+  and `FoldEffect.swift`. Version 0.6.7 uses its 32-point Vogel disk sampling
+  pattern, with Duo Home-specific handling for partially out-of-bounds taps.
+  The Swift implementation uses device attitude; Duo Home's 45-degree
   physical hinge mapping comes from the Android adaptations.
 
 The following projects were also studied to compare Android hinge mapping,

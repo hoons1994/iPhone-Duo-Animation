@@ -95,6 +95,21 @@ validated as a pixel-identical reproduction.
 
 ## Home rendering and fold effect
 
+Version 0.6.7 replaces the six-level Gaussian and blend graph with one AGSL
+pass. It samples a 32-point Vogel disk using the physical disk radius. Version
+0.6.6 passed that radius as Gaussian sigma, making the blur spread about twice
+as far. Out-of-bounds samples contribute black and remain in the fixed divisor;
+the shader keeps a stable tap count as the hinge moves and blends into direct
+sampling at subpixel radii. This follows the reference kernel pattern without
+adding a native blur graph, though Android execution cost and visible grain need
+measurement on a Fold device.
+
+The first resumed frame waits for a current-session sensor sample. If no fresh
+reading arrives in 120 ms, the launcher draws at the visible surface endpoint.
+Handoff calibration now measures sample age from `SensorEvent.timestamp`, and
+the coarse/source-switch follower establishes its first step from real vsync
+intervals instead of assuming a 60 Hz frame.
+
 `HomeActivity` places the wallpaper and launcher views inside `LiveFoldLayout`,
 a `FrameLayout` that applies a live `RenderEffect`. Android provides that view's
 current `RenderNode` contents, including ordinary child views, as the shader
@@ -148,7 +163,10 @@ and [`FoldEffect.swift`](https://github.com/elijah-semyonov/DuoLikeAnimation/blo
 Their sample patterns, physical scaling, and sensor inputs differ from this
 launcher implementation; these references do not establish visual equivalence.
 
-`DuoFoldModel.blurLevels()` supplies up to six source-space levels. With maximum
+### Replaced 0.6.6 Gaussian blend graph
+
+The historical 0.6.6 renderer used `DuoFoldModel.blurLevels()` to supply up to
+six source-space levels. With maximum
 radius `R`, it defines `coarse = R/9` and `fine = min(1, coarse/3)`, then uses
 `[0, fine, sqrt(fine * coarse), coarse, R/3, R]`. Positive levels respect the
 native filter's minimum effective sigma of approximately 0.505774 source pixels;
@@ -168,7 +186,7 @@ premultiplied colors. These native Gaussian mixtures are an approximation:
 they do not reproduce the gap-model references' Vogel-disk/Metal filter or the
 earlier browser/Classic 25-tap kernel with mip sampling.
 
-The six-level graph was introduced in 0.6.5 to reduce sharp-source mixtures,
+That six-level graph was introduced in 0.6.5 to reduce sharp-source mixtures,
 but the user still reported unnatural stretching. Version 0.6.6 also removes
 the rigid 87.3-degree optical pose. The two extra small-radius passes relative to 0.6.4
 remain; neither their GPU cost nor this revision's visual result has been
@@ -267,9 +285,10 @@ display geometry → view reflow + display classification
 The previous 0.6.0 implementation passed 56 JVM tests and 32 desktop Skia pixel
 states across four rotations. Versions 0.6.1–0.6.5 later completed APK builds.
 These are historical results. The final 0.6.6 APK build completed on 2026-09-26
-(version code 13). Tests and device interaction checks have
-not been run for the new angle mapping, curved strip,
-gap-based frost, pre-draw scheduling, or activity reuse.
+(version code 13), and the 0.6.7 debug APK build completed on 2026-09-27
+(version code 14). Tests and device interaction checks have not been run for
+the 0.6.6 angle mapping, curved strip, gap-based frost, pre-draw scheduling, or
+activity reuse, nor the 0.6.7 disk shader and sensor-timing changes.
 Desktop checks cannot
 execute Android's `RenderEffect` graph, validate glass-panel appearance, or
 measure device performance. Android GPU instrumentation remains unrun; no ADB

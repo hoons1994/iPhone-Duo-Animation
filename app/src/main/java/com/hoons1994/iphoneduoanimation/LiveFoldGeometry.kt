@@ -30,7 +30,6 @@ internal data class LiveFoldGeometry(
     val hingeFlexPx = DuoFoldModel.hingeFlex(paneExtent)
     val maxBlurPx = DuoFoldModel.maxBlurRadius(axisExtent, cover)
     val darkening = DuoFoldModel.darkening(density)
-    val maxFrostRadiusPx = frostRadius(DuoFoldModel.bentDistance(paneExtent, hingeFlexPx) * foldSin)
     val active get() = tiltDegrees > 0.02f && width > 0 && height > 0
 
     private fun frostRadius(gap: Float): Float = minOf(maxBlurPx, DuoFoldModel.BLUR_SPREAD * gap)

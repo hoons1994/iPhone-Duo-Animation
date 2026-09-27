@@ -74,6 +74,7 @@ class HingeAngleMonitor(
     private var framePending = false
     private var coarseCurrent = Float.NaN
     private var coarseTarget = Float.NaN
+    private var coarseSampleTimestampNanos = Long.MIN_VALUE
     private var usingCoarseFollower = false
     private var fineBridgeCurrent = Float.NaN
     private var latestFineOutput: HingeSignalFilter.Output? = null
@@ -178,14 +179,15 @@ class HingeAngleMonitor(
         }
 
         if (usingCoarseFollower) {
-            followCoarseAngle(angle)
+            followCoarseAngle(angle, event.timestamp)
         } else {
             emitFine(signalFilter.update(angle, event.timestamp).copy(opening = opening))
             scheduleFollowFrame()
         }
     }
 
-    private fun followCoarseAngle(angle: Float) {
+    private fun followCoarseAngle(angle: Float, sampleTimestampNanos: Long) {
+        coarseSampleTimestampNanos = sampleTimestampNanos
         if (!coarseCurrent.isFinite()) {
             coarseCurrent = angle
             coarseTarget = angle
@@ -211,8 +213,11 @@ class HingeAngleMonitor(
             if (settled != null) latestFineOutput = settled
             if (fineBridgeCurrent.isFinite()) {
                 val output = latestFineOutput ?: return
-                fineBridgeCurrent = FrameSmoothing.step(fineBridgeCurrent, output.filteredAngleDegrees,
-                    frameDeltaSeconds(frameTimeNanos), FINE_BRIDGE_TIME_CONSTANT_SECONDS, COARSE_SETTLE_DEGREES)
+                val dt = frameDeltaSeconds(frameTimeNanos)
+                if (dt > 0f) {
+                    fineBridgeCurrent = FrameSmoothing.step(fineBridgeCurrent, output.filteredAngleDegrees,
+                        dt, FINE_BRIDGE_TIME_CONSTANT_SECONDS, COARSE_SETTLE_DEGREES)
+                }
                 emitFine(output.copy(isSensorSample = false))
                 if (fineBridgeCurrent == output.filteredAngleDegrees) {
                     fineBridgeCurrent = Float.NaN
@@ -224,13 +229,15 @@ class HingeAngleMonitor(
         }
         if (!coarseCurrent.isFinite() || !coarseTarget.isFinite()) return
         val dt = frameDeltaSeconds(frameTimeNanos)
-        coarseCurrent = FrameSmoothing.step(
-            coarseCurrent,
-            coarseTarget,
-            dt,
-            COARSE_TIME_CONSTANT_SECONDS,
-            COARSE_SETTLE_DEGREES,
-        )
+        if (dt > 0f) {
+            coarseCurrent = FrameSmoothing.step(
+                coarseCurrent,
+                coarseTarget,
+                dt,
+                COARSE_TIME_CONSTANT_SECONDS,
+                COARSE_SETTLE_DEGREES,
+            )
+        }
         emitCoarse(isSensorSample = false)
         if (coarseCurrent != coarseTarget) scheduleFollowFrame() else lastFrameNanos = 0L
     }
@@ -243,6 +250,7 @@ class HingeAngleMonitor(
                 filteredProgress = (coarseCurrent / 180f).coerceIn(0f, 1f),
                 opening = opening,
                 isSensorSample = isSensorSample,
+                sampleTimestampNanos = coarseSampleTimestampNanos,
             ),
         )
     }
@@ -268,10 +276,17 @@ class HingeAngleMonitor(
     }
 
     private fun frameDeltaSeconds(frameTimeNanos: Long): Float {
-        val dt = if (lastFrameNanos == 0L) 1f / 60f else
-            (frameTimeNanos - lastFrameNanos) / 1_000_000_000f
-        lastFrameNanos = frameTimeNanos
-        return dt
+        if (lastFrameNanos == 0L) {
+            // Establish this follower's frame clock without inventing a 60 Hz
+            // first step. The next callback advances by its actual interval.
+            lastFrameNanos = frameTimeNanos
+            return 0f
+        }
+        val dt = (frameTimeNanos - lastFrameNanos) / 1_000_000_000f
+        lastFrameNanos = maxOf(lastFrameNanos, frameTimeNanos)
+        // Callers hold at zero instead of invoking FrameSmoothing, whose
+        // minimum timestep would otherwise turn a held frame into movement.
+        return dt.coerceAtLeast(0f)
     }
 
     private fun scheduleFollowFrame() {
@@ -294,6 +309,7 @@ class HingeAngleMonitor(
         cancelFollowFrame()
         coarseCurrent = Float.NaN
         coarseTarget = Float.NaN
+        coarseSampleTimestampNanos = Long.MIN_VALUE
     }
 
     private fun discover(): List<Sensor> {

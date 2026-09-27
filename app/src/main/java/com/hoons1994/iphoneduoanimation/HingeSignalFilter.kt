@@ -22,12 +22,15 @@ class HingeSignalFilter {
         val opening: Boolean,
         /** False for display-frame settling; only real samples refresh calibration age. */
         val isSensorSample: Boolean = true,
+        /** Source SensorEvent time in the elapsedRealtimeNanos clock, never delivery time. */
+        val sampleTimestampNanos: Long = Long.MIN_VALUE,
     )
 
     private var filteredAngle = Float.NaN
     private var previousRawAngle = Float.NaN
     private var directionAnchorAngle = Float.NaN
     private var previousTimestampNanos = Long.MIN_VALUE
+    private var lastSampleTimestampNanos = Long.MIN_VALUE
     private var lastFilterTimestampNanos = Long.MIN_VALUE
     private var responseTimeConstant = SLOW_TIME_CONSTANT_SECONDS
     private var opening = true
@@ -69,6 +72,7 @@ class HingeSignalFilter {
 
         updateDirection(raw)
         previousRawAngle = raw
+        lastSampleTimestampNanos = timestampNanos
         if (timestampNanos != Long.MIN_VALUE) {
             previousTimestampNanos = timestampNanos
             lastFilterTimestampNanos = maxOf(lastFilterTimestampNanos, timestampNanos)
@@ -79,6 +83,7 @@ class HingeSignalFilter {
             filteredAngleDegrees = filteredAngle,
             filteredProgress = (filteredAngle / 180f).coerceIn(0f, 1f),
             opening = opening,
+            sampleTimestampNanos = timestampNanos,
         )
     }
 
@@ -100,7 +105,7 @@ class HingeSignalFilter {
         )
         lastFilterTimestampNanos = maxOf(lastFilterTimestampNanos, timestampNanos)
         return Output(previousRawAngle, filteredAngle, filteredAngle / 180f, opening,
-            isSensorSample = false)
+            isSensorSample = false, sampleTimestampNanos = lastSampleTimestampNanos)
     }
 
     fun reset() {
@@ -108,6 +113,7 @@ class HingeSignalFilter {
         previousRawAngle = Float.NaN
         directionAnchorAngle = Float.NaN
         previousTimestampNanos = Long.MIN_VALUE
+        lastSampleTimestampNanos = Long.MIN_VALUE
         lastFilterTimestampNanos = Long.MIN_VALUE
         responseTimeConstant = SLOW_TIME_CONSTANT_SECONDS
         opening = true

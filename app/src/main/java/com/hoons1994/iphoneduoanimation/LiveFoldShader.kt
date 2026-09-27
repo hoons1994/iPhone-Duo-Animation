@@ -1,11 +1,9 @@
 package com.hoons1994.iphoneduoanimation
 
-import android.graphics.BlendMode
 import android.graphics.RenderEffect
 import android.graphics.RuntimeShader
-import android.graphics.Shader
 
-/** Each branch samples one live Gaussian level, projects it, and contributes its weight. */
+/** One live pass: ray projection and a finite, spatially stable Vogel-disk scatter kernel. */
 internal object LiveFoldShader {
     const val SOURCE = """
         uniform shader content;
@@ -20,25 +18,16 @@ internal object LiveFoldShader {
         uniform float darkening;
         uniform float hingeAxisY;
         uniform float hingeFromEnd;
-        uniform float level;
-        uniform float3 radiusStops;
 
-        float levelWeight(float radius) {
-            // Neighboring native Gaussian levels are blended by variance.
-            // The first positive stop is <= 1 source pixel, so larger radii
-            // contain no sharp delta that could turn text into long streaks.
-            float r = radius * radius;
-            float3 variance = radiusStops * radiusStops;
-            if (level < 0.5) {
-                return 1.0 - clamp(r / max(variance.z, 0.000001), 0.0, 1.0);
+        // Use the actual footprint at the edge, rather than clamping bright
+        // pixels into the missing part of the kernel. Keep the full denominator:
+        // light outside the UI plane is black, just as in DuoFold.metal.
+        half3 samplePlane(float2 p) {
+            if (p.x < 0.0 || p.y < 0.0 || p.x >= resolution.x || p.y >= resolution.y) {
+                return half3(0.0);
             }
-            float rising = clamp((r - variance.x) /
-                max(variance.y - variance.x, 0.000001), 0.0, 1.0);
-            // The last level repeats its own radius as its upper stop.
-            if (radiusStops.z <= radiusStops.y) return rising;
-            float falling = 1.0 - clamp((r - variance.y) /
-                max(variance.z - variance.y, 0.000001), 0.0, 1.0);
-            return min(rising, falling);
+            // The input is premultiplied. Dropping alpha composites over black.
+            return content.eval(p).rgb;
         }
 
         half4 main(float2 p) {
@@ -48,9 +37,9 @@ internal object LiveFoldShader {
             float axis = mix(rawAxis, axisExtent - rawAxis, hingeFromEnd);
             float across = mix(p.y, p.x, hingeAxisY);
 
-            // Only the unblurred branch contributes the fixed inner pane.
+            // The stationary pane needs neither projection nor scatter taps.
             if (coverSurface < 0.5 && axis >= axisExtent * 0.5) {
-                return level < 0.5 ? content.eval(p) : half4(0.0);
+                return content.eval(p);
             }
 
             float hinge = coverSurface > 0.5 ? 0.0 : axisExtent * 0.5;
@@ -65,13 +54,13 @@ internal object LiveFoldShader {
             float gap = max(0.0, bentDistance * foldSin);
             float depth = eyeDistancePx - gap;
             if (depth <= 0.001) {
-                return level < 0.5 ? half4(0.0, 0.0, 0.0, 1.0) : half4(0.0);
+                return half4(0.0, 0.0, 0.0, 1.0);
             }
             // DuoLikeAnimation's separation-based frost. No inverse projection
             // gain: both radius and shadow resolve continuously at the hinge.
             float radius = min(maxBlurPx, blurSpread * gap);
-            half weight = half(levelWeight(radius));
-            if (weight <= 0.0) return half4(0.0);
+            float shade = max(1.0 - darkening * radius, 0.0);
+            if (shade <= 0.0) return half4(0.0, 0.0, 0.0, 1.0);
 
             float eyeAxis = axisExtent * 0.5;
             float perspective = eyeDistancePx / depth;
@@ -80,45 +69,51 @@ internal object LiveFoldShader {
             float rawHit = mix(hitAxis, axisExtent - hitAxis, hingeFromEnd);
             float2 source = hingeAxisY > 0.5 ? float2(hitAcross, rawHit) : float2(rawHit, hitAcross);
 
-            // Deliberate black falloff outside the fixed UI plane. CLAMP on the
-            // native blur prevents unintended transparent edges in the source.
-            float footprint = max(0.5, radius * 0.75);
-            float2 coverage = smoothstep(float2(-footprint), float2(footprint), source) *
-                (1.0 - smoothstep(resolution - footprint, resolution + footprint, source));
-            half4 color = content.eval(clamp(source, float2(0.5), resolution - 0.5));
-            float shade = max(1.0 - darkening * radius, 0.0);
-            half attenuation = half(shade * coverage.x * coverage.y);
-            return half4(color.rgb * attenuation, color.a) * weight;
+            if (source.x < -radius || source.y < -radius ||
+                source.x > resolution.x + radius || source.y > resolution.y + radius) {
+                return half4(0.0, 0.0, 0.0, 1.0);
+            }
+            if (radius <= 0.01) return half4(samplePlane(source) * half(shade), 1.0);
+
+            // A radius is a disk radius, not Gaussian sigma. The old graph used
+            // sigma = radius, giving four times the disk's per-axis variance.
+            // Keep all 32 locations for every nontrivial radius. Changing the
+            // tap count relocates the entire kernel as the hinge moves.
+            float rotation = fract(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453) * 6.28318530718;
+            float2 direction = float2(cos(rotation), sin(rotation));
+            const float2 goldenStep = float2(-0.737368878, 0.675490294);
+            float3 sum = float3(0.0);
+            for (int i = 0; i < 32; i++) {
+                float fi = float(i);
+                float2 offset = radius * sqrt((fi + 0.5) / 32.0) * direction;
+                sum += float3(samplePlane(source + offset));
+                direction = float2(
+                    direction.x * goldenStep.x - direction.y * goldenStep.y,
+                    direction.x * goldenStep.y + direction.y * goldenStep.x);
+            }
+            half3 scattered = half3(sum * (1.0 / 32.0));
+            // Resolve the subpixel tail continuously instead of switching from
+            // a sharp sample to a different kernel at the original 0.5px cutoff.
+            if (radius < 0.5) {
+                scattered = mix(samplePlane(source), scattered, half(smoothstep(0.01, 0.5, radius)));
+            }
+            return half4(scattered * half(shade), 1.0);
         }
     """
 }
 
-/** GPU-only filter graph. No Bitmap, readback, capture worker, or cached home image. */
+/** One GPU effect per pose; source content remains live without any bitmap capture. */
 internal class LiveFoldEffects {
-    private val shaders = Array(DuoFoldModel.MAX_BLUR_LEVEL_COUNT) { RuntimeShader(LiveFoldShader.SOURCE) }
-    private var cachedBlurRadius = -1f
-    private var radii = FloatArray(0)
-    private var blurs = arrayOfNulls<RenderEffect>(0)
+    private val shader = RuntimeShader(LiveFoldShader.SOURCE)
+    private var configuredGeometry: LiveFoldGeometry? = null
 
     fun create(geometry: LiveFoldGeometry): RenderEffect {
-        if (cachedBlurRadius != geometry.maxBlurPx) {
-            cachedBlurRadius = geometry.maxBlurPx
-            radii = DuoFoldModel.blurLevels(cachedBlurRadius)
-            blurs = Array(radii.size) { index -> if (index == 0) null else blur(radii[index]) }
-        }
-        var combined: RenderEffect? = null
-        // The glass-to-UI gap, hence the frost radius, grows towards the edge.
-        val reachableRadius = geometry.maxFrostRadiusPx
-        radii.forEachIndexed { index, radius ->
-            // A branch that is transparent everywhere must not run its native
-            // blur pass, especially during the long, almost-clear fold tail.
-            val lowerRadius = radii[(index - 1).coerceAtLeast(0)]
-            if (index > 0 && reachableRadius <= lowerRadius) return@forEachIndexed
-            val shader = shaders[index]
+        val previous = configuredGeometry
+        if (previous == null || previous.width != geometry.width || previous.height != geometry.height ||
+            previous.cover != geometry.cover || previous.rotation != geometry.rotation ||
+            previous.pixelsPerMm != geometry.pixelsPerMm) {
             shader.setFloatUniform("resolution", geometry.width.toFloat(), geometry.height.toFloat())
             shader.setFloatUniform("coverSurface", if (geometry.cover) 1f else 0f)
-            shader.setFloatUniform("foldCos", geometry.foldCos)
-            shader.setFloatUniform("foldSin", geometry.foldSin)
             shader.setFloatUniform("eyeDistancePx", geometry.eyeDistancePx)
             shader.setFloatUniform("maxBlurPx", geometry.maxBlurPx)
             shader.setFloatUniform("hingeFlexPx", geometry.hingeFlexPx)
@@ -126,22 +121,12 @@ internal class LiveFoldEffects {
             shader.setFloatUniform("darkening", geometry.darkening)
             shader.setFloatUniform("hingeAxisY", if (geometry.axisY) 1f else 0f)
             shader.setFloatUniform("hingeFromEnd", if (geometry.hingeFromEnd) 1f else 0f)
-            shader.setFloatUniform("level", index.toFloat())
-            shader.setFloatUniform("radiusStops", lowerRadius, radius,
-                radii[(index + 1).coerceAtMost(radii.lastIndex)])
-            // RenderEffect snapshots the shader builder. Recreate the effect
-            // after changing uniforms; reusing it would freeze the old angle.
-            val projection = RenderEffect.createRuntimeShaderEffect(shader, "content")
-            val branch = blurs[index]?.let { RenderEffect.createChainEffect(projection, it) }
-                ?: projection
-            combined = combined?.let { RenderEffect.createBlendModeEffect(it, branch, BlendMode.PLUS) }
-                ?: branch
         }
-        return requireNotNull(combined)
-    }
-
-    private fun blur(radius: Float): RenderEffect {
-        val nativeRadius = DuoFoldModel.nativeBlurRadius(radius)
-        return RenderEffect.createBlurEffect(nativeRadius, nativeRadius, Shader.TileMode.CLAMP)
+        shader.setFloatUniform("foldCos", geometry.foldCos)
+        shader.setFloatUniform("foldSin", geometry.foldSin)
+        configuredGeometry = geometry
+        // RenderEffect snapshots uniforms. Recreate this single effect after
+        // updating the pose; retaining the earlier effect would freeze its angle.
+        return RenderEffect.createRuntimeShaderEffect(shader, "content")
     }
 }

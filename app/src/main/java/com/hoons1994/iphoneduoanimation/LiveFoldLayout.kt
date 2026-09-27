@@ -18,6 +18,7 @@ internal class LiveFoldLayout(context: Context) : FrameLayout(context) {
         resources.displayMetrics.heightPixels) == SurfaceClassifier.Surface.COVER
     private var surfaceReported = false
     private var renderingActive = false
+    private var firstPoseReady = true
     private var renderPending = true
     private var observedTree: ViewTreeObserver? = null
     private var displayedGeometry: LiveFoldGeometry? = null
@@ -33,14 +34,28 @@ internal class LiveFoldLayout(context: Context) : FrameLayout(context) {
         // The hinge monitor owns filtering and its vsync settle callback. Read
         // its latest pose after animation callbacks, once before this traversal
         // draws; a second independent follower adds latency and uneven pacing.
-        if (renderPending) {
-            renderPending = false
-            renderCurrentGeometry()
+        if (!firstPoseReady) {
+            false
+        } else {
+            if (renderPending) {
+                renderPending = false
+                renderCurrentGeometry()
+            }
+            true
         }
-        true
     }
 
     fun isCoverSurface() = cover
+
+    fun setFirstPoseReady(ready: Boolean) {
+        if (firstPoseReady == ready) return
+        firstPoseReady = ready
+        if (ready) requestRender() else {
+            cancelTouch()
+            clearEffect()
+            invalidate()
+        }
+    }
 
     fun setRenderingActive(active: Boolean) {
         if (renderingActive == active) return

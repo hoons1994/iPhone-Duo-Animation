@@ -1,6 +1,28 @@
 # Live blur architecture and historical regression evidence
 
-## Current 0.6.6 scope
+## Current 0.6.7 scope
+
+Version 0.6.7 (version code 14) replaces the six-level Gaussian blend with one
+live shader using the 32-point Vogel-disk sample pattern. The disk radius now
+retains its original units. The prior graph treated it as Gaussian sigma,
+spreading detail about twice as far. The new graph builds one RuntimeShader
+effect per pose; sample grain and GPU frame cost still need measurement on a
+Fold display.
+
+The 0.6.6 active-range mapping, smooth hinge strip, and gap-based ray projection
+remain. Sensor frames establish their clock from the first observed vsync
+interval instead of assuming 60 Hz. Handoff calibration uses the sensor event's
+measurement time. On resume, the first draw waits for a current-session sensor
+sample, then uses a visible-surface endpoint fallback after 120 ms if no fresh
+reading arrives.
+
+The final `:app:assembleDebug` completed successfully for 0.6.7 (version code 14)
+on 2026-09-27. No tests, runtime AGSL checks, or physical-device checks have been
+run. The desktop fixture was rewired to the live disk shader but has not been
+run. Android AGSL compilation, GPU cost, sample grain, frame pacing, touch
+behavior, and visual fidelity remain unverified.
+
+## Historical 0.6.6 scope
 
 Version 0.6.6 (version code 13) changes the optical model after the finer blur
 levels in 0.6.5 did not resolve the user's stretching complaint. Each display's
@@ -20,7 +42,7 @@ Android GPU cost, frame pacing, touch behavior, and physical reference fidelity
 remain unverified. Compilation does not establish smoother animation or lower
 rendering cost.
 
-## Current fold renderer
+## Historical 0.6.6 fold renderer
 
 `HomeActivity` now renders its current view tree through `LiveFoldLayout` and
 Android's `RenderEffect` input. For maximum source-space radius `R`,
@@ -176,11 +198,10 @@ native Gaussian levels, and the production shader projects and weights each
 level. The checks cover opacity preservation, fixed-pane sharpness, moving-pane
 frost without mistaking black output for blur, and unchanged endpoint pixels.
 That run's diagnostics were written under `build/live-shader-report/`. Those
-32 passing states describe the earlier model and do not validate the current renderer. The
-fixture has been updated for the current active-range mapping, density-aware
-eye distance, curved hinge strip, gap-derived frost, native blur conversion,
-and up-to-six-level `radiusStops` inputs, but
-it has not been run for this revision.
+32 passing states describe the earlier model and do not validate the current renderer.
+The fixture has been rewired for the current active-range mapping, density-aware
+eye distance, curved hinge strip, gap-derived frost, and direct Vogel-disk shader,
+but it has not been run for this revision.
 
 ```powershell
 python tools/check_live_shader.py build/live-shader-report
